@@ -44,13 +44,22 @@ GATES: dict[str, tuple[str, float, str]] = {
 }
 
 
+VERBOSE = False  # set by the CLI; the API run stays quiet
+
+
+def _progress(msg: str) -> None:
+    if VERBOSE:
+        print(f"[{time.strftime('%H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+
+
 def _n(s) -> str:
     return re.sub(r"[^a-z0-9]", "", str(s or "").lower())
 
 
 def eval_intake(emails: list[dict], provider: str) -> tuple[dict, list[dict], list[dict]]:
     rows, fails, reqs = [], [], []
-    for e in emails:
+    for i, e in enumerate(emails, 1):
+        _progress(f"intake {i}/{len(emails)} {e['email_id']} (layout {e['email_format_id']})")
         t0 = time.time()
         try:
             r = intake.extract(e, provider)
@@ -132,7 +141,8 @@ def eval_requests(reqs: list[dict]) -> dict:
 
 def eval_alerts(n: int, provider: str, judge: bool) -> tuple[dict, list[dict]]:
     results, fails = [], []
-    for c in alerts.candidates(n):
+    for i, c in enumerate(alerts.candidates(n), 1):
+        _progress(f"alert {i}/{n} {c['delivery_id']}" + (" + judge" if judge else ""))
         try:
             r = alerts.draft(c["delivery_id"], provider, judge=judge)
         except Exception as exc:
@@ -154,7 +164,8 @@ def eval_alerts(n: int, provider: str, judge: bool) -> tuple[dict, list[dict]]:
 def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
     qs = json.loads(QUESTIONS.read_text())
     rows, fails = [], []
-    for q in qs:
+    for i, q in enumerate(qs, 1):
+        _progress(f"question {i}/{len(qs)} {q['id']}: {q['question']}")
         try:
             r = evidence.ask(q["question"], provider)
         except Exception as exc:
@@ -246,7 +257,11 @@ def main() -> None:
     ap.add_argument("--judge", action=argparse.BooleanOptionalAction, default=None)
     ap.add_argument("--enforce", action="store_true", help="exit 1 if any gate fails")
     a = ap.parse_args()
+    global VERBOSE
+    VERBOSE = True
+    _progress(f"starting evals: provider={a.provider or 'from .env'}, {a.limit} emails, {a.alerts} alerts, 16 questions")
     r = run(a.provider, a.limit, a.alerts, a.judge)
+    _progress(f"done in {r['duration_s']}s; report saved to reports/evals/latest.json")
     print(to_markdown(r))
     if a.enforce and not r["all_gates_passed"]:
         sys.exit(1)
