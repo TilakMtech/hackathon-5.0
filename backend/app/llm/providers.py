@@ -50,20 +50,38 @@ class ClaudeFoundryProvider:
             from anthropic import AnthropicFoundry  # reads ANTHROPIC_FOUNDRY_API_KEY + _RESOURCE or _BASE_URL
             client = AnthropicFoundry(timeout=settings.llm_timeout_s, max_retries=2)
         self.client = client
+        self._no_temperature: set[str] = set()
+        self._no_forced_tools: set[str] = set()
 
     def model_for(self, tier: str) -> str:
         return settings.claude_smart_model if tier == "smart" else settings.claude_fast_model
 
     def _create(self, prompt: Prompt, **kw):
-        kw.setdefault("model", self.model_for(prompt.tier))
+        """messages.create with compatibility fallbacks, learned once per model:
+        - a model that rejects `temperature` (e.g. with extended thinking on) is retried without it;
+        - a model that rejects a forced tool_choice while thinking is retried with tool_choice auto
+          (the caller then nudges the model to use the tool if it answers in plain text)."""
+        model = kw.setdefault("model", self.model_for(prompt.tier))
         kw.setdefault("max_tokens", prompt.max_tokens)
         kw["system"] = [{"type": "text", "text": prompt.system, "cache_control": {"type": "ephemeral"}}]
-        if settings.llm_send_temperature:
+        if settings.llm_send_temperature and model not in self._no_temperature:
+            kw["temperature"] = prompt.temperature
+        if model in self._no_forced_tools and kw.get("tool_choice", {}).get("type") in ("tool", "any"):
+            kw["tool_choice"] = {"type": "auto"}
+        for _ in range(3):
             try:
-                return self.client.messages.create(temperature=prompt.temperature, **kw)
-            except Exception as exc:  # some models reject temperature: retry once without it
-                if not is_temperature_error(exc):
-                    raise
+                return self.client.messages.create(**kw)
+            except Exception as exc:
+                msg = str(exc).lower()
+                if "temperature" in kw and is_temperature_error(exc):
+                    kw.pop("temperature")
+                    self._no_temperature.add(model)
+                    continue
+                if "thinking" in msg and "tool" in msg and kw.get("tool_choice", {}).get("type") in ("tool", "any"):
+                    kw["tool_choice"] = {"type": "auto"}
+                    self._no_forced_tools.add(model)
+                    continue
+                raise
         return self.client.messages.create(**kw)
 
     @staticmethod
@@ -81,14 +99,16 @@ class ClaudeFoundryProvider:
                 "input_schema": inline_schema(schema)}
         messages: list[dict] = [{"role": "user", "content": user}]
         t0, tin, tout, tcache = time.time(), 0, 0, 0
-        for attempt in range(2):
+        for attempt in range(3):
             resp = self._create(prompt, messages=messages, tools=[tool],
                                 tool_choice={"type": "tool", "name": OUTPUT_TOOL})
             i, o, c = self._usage(resp)
             tin, tout, tcache = tin + i, tout + o, tcache + c
             call = next((b for b in self._blocks(resp) if b.get("type") == "tool_use"), None)
-            if call is None:
-                raise LLMError("model returned no tool call")
+            if call is None:  # answered in text (tool not forced): ask once more for the tool call
+                messages += [{"role": "assistant", "content": self._blocks(resp)},
+                             {"role": "user", "content": f"Now give your result by calling the {OUTPUT_TOOL} tool."}]
+                continue
             try:
                 out = schema.model_validate(call["input"])
                 log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
@@ -100,7 +120,7 @@ class ClaudeFoundryProvider:
                                                            "content": _repair_msg(err), "is_error": True}]}]
         log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
                             int((time.time() - t0) * 1000), tin, tout, tcache, 2, ok=False, error="schema"))
-        raise LLMError("output failed schema validation twice")
+        raise LLMError("no valid structured output after 3 attempts")
 
     def tool_loop(self, prompt: Prompt, user: str, tools: list[Tool], final_schema: type[T],
                   context: dict | None = None, max_steps: int = 6) -> tuple[T, list[dict]]:
@@ -137,7 +157,9 @@ class ClaudeFoundryProvider:
                 trace.append({"tool": b["name"], "input": b["input"], "output": result})
                 results.append({"type": "tool_result", "tool_use_id": b["id"],
                                 "content": json.dumps(result, default=str)[:20000]})
-            messages.append({"role": "user", "content": results})
+            # no tool call (tool_choice auto with a thinking model): nudge it to continue with a tool
+            messages.append({"role": "user", "content": results or
+                             f"Continue: call run_sql to query the data, or {FINAL_TOOL} to answer."})
         log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
                             int((time.time() - t0) * 1000), tin, tout, tcache, max_steps, ok=False, error="max_steps"))
         raise LLMError(f"no final answer after {max_steps} steps")

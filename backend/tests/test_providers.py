@@ -95,3 +95,22 @@ def test_markup_leak_in_final_answer_triggers_repair():
     ans, _ = ClaudeFoundryProvider(client=stub).tool_loop(load_prompt("p4_evidence_agent"), "q", [], EvidenceAnswer)
     assert "<" not in ans.answer and ans.sql == "SELECT 1"
     assert stub.calls[1]["messages"][-1]["content"][0]["is_error"]  # model was asked to fix its call
+
+
+def test_thinking_model_falls_back_to_auto_tool_choice_and_nudges():
+    class ThinkingStub(StubAnthropic):
+        def create(self, **kw):
+            if kw.get("tool_choice", {}).get("type") in ("tool", "any"):
+                self.calls.append(copy.deepcopy(kw))
+                raise RuntimeError("tool_choice forces tool use, which is not compatible with thinking enabled")
+            return super().create(**kw)
+
+    text_only = NS(content=[Block(type="thinking", thinking="hmm", signature="s"), Block(type="text", text="Here it is")],
+                   usage=NS(input_tokens=5, output_tokens=5, cache_read_input_tokens=0))
+    stub = ThinkingStub([text_only, _tool_use("record_output", GOOD)], reject_temperature=True)
+    p = ClaudeFoundryProvider(client=stub)
+    out = p.structured(load_prompt("p1_email_extraction"), "hi", Extraction)
+    assert out.order_lines[0].sku == "SKU-1"
+    assert stub.calls[-1]["tool_choice"] == {"type": "auto"} and "temperature" not in stub.calls[-1]
+    assert "record_output" in stub.calls[-1]["messages"][-1]["content"]  # nudged after a text-only reply
+    assert p._no_forced_tools and p._no_temperature  # learned once, reused for later calls
