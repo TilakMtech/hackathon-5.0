@@ -26,7 +26,7 @@ azd auth login
 azd env new csc-blp-otd
 azd env set AZURE_SUBSCRIPTION_ID dd8b37ac-5702-4df4-8a27-210a80f8d7f4
 azd env set AZURE_RESOURCE_GROUP rg-csc-blp
-azd env set AZURE_LOCATION centralindia
+azd env set AZURE_LOCATION centralus
 azd up
 ```
 
@@ -55,7 +55,7 @@ Rough cost: under $2 a day with one replica each. Run `azd down` after the hacka
 | `AuthorizationFailed` / `does not have authorization` | Your role on rg-csc-blp is below Contributor. Ask the admin for **Contributor** on the resource group. |
 | `MissingSubscriptionRegistration` for `Microsoft.App` or `Microsoft.ContainerRegistry` | Ask the admin to register those resource providers on the subscription (Subscriptions → Resource providers → Register). |
 | `TasksOperationsNotAllowed` or remote build fails | ACR Tasks are blocked on this subscription. Install Docker Desktop, set `remoteBuild: false` for both services in `azure.yaml`, and run `azd deploy` again. |
-| Region not allowed for Container Apps | `azd env set AZURE_LOCATION southindia` (or `eastus2`) and run `azd up` again. |
+| Region not allowed for Container Apps | `azd env set AZURE_LOCATION eastus2` (or `westus3`) and run `azd up` again. |
 
 ---
 
