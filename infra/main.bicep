@@ -11,6 +11,16 @@ param location string = resourceGroup().location
 @description('Pull images with ACR admin credentials (works with Contributor). Set false to use a managed identity + AcrPull role (needs Owner or User Access Administrator).')
 param useAcrAdmin bool = true
 
+@description('LLM provider for the agents: mock | claude_foundry | azure_openai')
+param llmProvider string = 'mock'
+
+@description('Foundry resource name hosting the Claude deployments, e.g. csc-blp-foundry')
+param foundryResource string = ''
+
+@secure()
+@description('Foundry API key. Stored as a Container Apps secret, never in plain env or source.')
+param foundryApiKey string = ''
+
 @description('Images are set by azd deploy; these placeholders let the first provision succeed.')
 param apiImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 param webImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -83,6 +93,11 @@ var registries = useAcrAdmin
   ? [{ server: acr.properties.loginServer, username: acr.listCredentials().username, passwordSecretRef: 'acr-password' }]
   : [{ server: acr.properties.loginServer, identity: pullIdentity.id }]
 var registrySecrets = useAcrAdmin ? [{ name: 'acr-password', value: acr.listCredentials().passwords[0].value }] : []
+var llmSecrets = empty(foundryApiKey) ? [] : [{ name: 'foundry-api-key', value: foundryApiKey }]
+var llmKeyEnv = empty(foundryApiKey) ? [] : [
+  { name: 'ANTHROPIC_FOUNDRY_API_KEY', secretRef: 'foundry-api-key' }
+  { name: 'OTD_AOAI_API_KEY', secretRef: 'foundry-api-key' }
+]
 var identityBlock = useAcrAdmin ? { type: 'None' } : { type: 'UserAssigned', userAssignedIdentities: { '${pullIdentity.id}': {} } }
 
 resource api 'Microsoft.App/containerApps@2024-03-01' = {
@@ -101,7 +116,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         corsPolicy: { allowedOrigins: ['*'], allowedMethods: ['GET', 'POST'] }
       }
       registries: registries
-      secrets: registrySecrets
+      secrets: concat(registrySecrets, llmSecrets)
     }
     template: {
       containers: [
@@ -109,10 +124,13 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
           name: 'api'
           image: apiImage
           resources: { cpu: json('1.0'), memory: '2Gi' }
-          env: [
+          env: concat([
             { name: 'OTD_CORS_ORIGINS', value: '*' }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
-          ]
+            { name: 'OTD_LLM_PROVIDER', value: llmProvider }
+            { name: 'ANTHROPIC_FOUNDRY_RESOURCE', value: foundryResource }
+            { name: 'OTD_AOAI_BASE_URL', value: empty(foundryResource) ? '' : 'https://${foundryResource}.openai.azure.com/openai/v1' }
+          ], llmKeyEnv)
           probes: [
             {
               type: 'Startup'

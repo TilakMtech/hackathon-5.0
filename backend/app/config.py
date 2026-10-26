@@ -1,6 +1,10 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Load backend/.env into the process so vendor SDK variables (ANTHROPIC_FOUNDRY_*) are visible too.
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 
 class Settings(BaseSettings):
@@ -18,6 +22,22 @@ class Settings(BaseSettings):
     bad_lane_multiple: float = 2.0
     bad_lane_floor: float = 0.15
     bad_lane_min_n: int = 100
+
+    # LLM provider: mock (offline, deterministic) | claude_foundry | azure_openai
+    llm_provider: str = "mock"
+    claude_fast_model: str = "claude-haiku-5-5"      # Foundry deployment names
+    claude_smart_model: str = "claude-sonnet-5-5"
+    aoai_base_url: str = ""                          # e.g. https://<resource>.openai.azure.com/openai/v1
+    aoai_api_key: str = ""
+    aoai_fast_deployment: str = "gpt-4.1-mini"
+    aoai_smart_deployment: str = "gpt-4.1"
+    llm_send_temperature: bool = True               # auto-retries without it if a model rejects temperature
+    llm_timeout_s: float = 60.0
+    llm_log_file: str = ""                          # optional JSONL log of every call (prompt version, tokens, latency)
+
+    # Intake guardrails
+    intake_auto_accept_confidence: float = 0.9
+    sql_row_limit: int = 200
 
     # Leadership targets
     otd_target: float = 0.85

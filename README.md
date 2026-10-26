@@ -2,7 +2,10 @@
 
 Halcyon thinks routing is why deliveries are late. The data says otherwise. This app shows why, with evidence, and lets leadership test any plan before signing the $680K routing contract.
 
-**Slice 1 (this commit): analytics + dashboard.** Slice 2 adds the Claude agents (email intake, delay alerts, evidence Q&A) from the solution playbook.
+**Slice 1:** analytics and the evidence dashboard.
+**Slice 2:** AI agents (email intake, address requests, delay alerts, evidence Q&A) with versioned prompts, guardrails and an eval suite with release gates. See [docs/AI_AGENTS.md](docs/AI_AGENTS.md).
+
+The LLM is a setting (`OTD_LLM_PROVIDER` = `mock` | `claude_foundry` | `azure_openai`). `mock` runs offline with no keys.
 
 ## What it shows
 
@@ -14,6 +17,10 @@ Halcyon thinks routing is why deliveries are late. The data says otherwise. This
 | Stock placement | 12% of orders ship from a far warehouse (875 vs 125 miles median) because the nearest one had no stock. |
 | Accounts at risk | The 9 accounts ($14.2M) threatening to leave, with each one's biggest driver. |
 | What-if | Sliders for each fix and for the vendor's routing cut, giving the expected OTD. |
+| Email intake | P1 extracts the order with evidence quotes; guardrails decide auto-accept, ask the client, or human review; P2 drafts the address request. |
+| Delay alerts | P3 writes a proactive alert from the delivery's root cause; code checks it and P5 judges it. |
+| Ask the data | P4 answers leadership questions with read-only SQL; every number is traced to a query result. |
+| Prompt quality | Eval report: 300 golden emails, 20 injections, 16 questions, and pass/fail release gates. |
 
 ## Design principles
 
@@ -25,7 +32,11 @@ Halcyon thinks routing is why deliveries are late. The data says otherwise. This
 ## Layout
 
 ```text
-backend/    FastAPI + analytics, Dockerfile, tests, data/ (synthetic hackathon CSVs)
+backend/    FastAPI + analytics, Dockerfile, tests, data/ (hackathon CSVs + synthetic emails)
+  app/prompts/   versioned prompt files (P1-P5)
+  app/agents/    intake, alerts, evidence agents + guardrails
+  app/llm/       provider layer (Claude Foundry, Azure OpenAI, mock)
+  app/evals.py   eval suite and release gates
 frontend/   React + TypeScript (Vite) + Recharts, nginx Dockerfile
 infra/      Bicep for Azure Container Apps (deploys into rg-csc-blp)
 azure.yaml  azd project (azd up)

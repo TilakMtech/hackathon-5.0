@@ -4,6 +4,9 @@
   "parameters": {
     "environmentName": { "value": "${AZURE_ENV_NAME}" },
     "location": { "value": "${AZURE_LOCATION}" },
-    "useAcrAdmin": { "value": true }
+    "useAcrAdmin": { "value": true },
+    "llmProvider": { "value": "${OTD_LLM_PROVIDER=mock}" },
+    "foundryResource": { "value": "${FOUNDRY_RESOURCE=}" },
+    "foundryApiKey": { "value": "${FOUNDRY_API_KEY=}" }
   }
 }

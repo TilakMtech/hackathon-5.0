@@ -5,15 +5,21 @@ import {
 } from 'recharts'
 import type { Accounts, Bridge, Drivers, Lanes, Overview, SimResult, Stock } from './api'
 import { get, num, pct, post, usd } from './api'
+import type { LlmStatus } from './agents'
+import { AlertsPage, AskPage, IntakePage, ProviderBadge, QualityPage } from './agents'
 
-type Tab = 'overview' | 'causes' | 'lanes' | 'stock' | 'accounts' | 'whatif'
-const TABS: { id: Tab; label: string }[] = [
-  { id: 'overview', label: 'Overview' },
-  { id: 'causes', label: 'Root causes' },
-  { id: 'lanes', label: 'Carrier lanes' },
-  { id: 'stock', label: 'Stock placement' },
-  { id: 'accounts', label: 'Accounts at risk' },
-  { id: 'whatif', label: 'What-if' },
+type Tab = 'overview' | 'causes' | 'lanes' | 'stock' | 'accounts' | 'whatif' | 'intake' | 'alerts' | 'ask' | 'quality'
+const TABS: { id: Tab; label: string; group: 'Evidence' | 'AI agents' }[] = [
+  { id: 'overview', label: 'Overview', group: 'Evidence' },
+  { id: 'causes', label: 'Root causes', group: 'Evidence' },
+  { id: 'lanes', label: 'Carrier lanes', group: 'Evidence' },
+  { id: 'stock', label: 'Stock placement', group: 'Evidence' },
+  { id: 'accounts', label: 'Accounts at risk', group: 'Evidence' },
+  { id: 'whatif', label: 'What-if', group: 'Evidence' },
+  { id: 'intake', label: 'Email intake', group: 'AI agents' },
+  { id: 'alerts', label: 'Delay alerts', group: 'AI agents' },
+  { id: 'ask', label: 'Ask the data', group: 'AI agents' },
+  { id: 'quality', label: 'Prompt quality', group: 'AI agents' },
 ]
 
 function useApi<T>(path: string) {
@@ -84,7 +90,7 @@ function OverviewPage() {
               <YAxis type="category" dataKey="name" width={140} />
               <Bar dataKey="hours" fill="var(--grey)" isAnimationActive={false}>
                 {csRows.map((r) => <Cell key={r.name} fill={r.name === 'Complaints' ? 'var(--bad)' : 'var(--grey)'} />)}
-                <LabelList dataKey="hours" position="right" fill="var(--ink)" formatter={(v: number) => `${Math.round(v)} h`} />
+                <LabelList dataKey="hours" position="right" fill="var(--ink)" formatter={(v: number) => `${Math.round(v)}h`} />
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -357,16 +363,22 @@ function WhatIfPage() {
 
 export default function App() {
   const [tab, setTab] = useState<Tab>('overview')
+  const [llm, setLlm] = useState<LlmStatus | null>(null)
+  useEffect(() => { get<LlmStatus>('/api/llm/status').then(setLlm).catch(() => setLlm(null)) }, [])
   return (
     <div className="app">
       <header>
         <div>
           <h1>Halcyon OTD Control Tower</h1>
-          <div className="muted small">Why deliveries are late, and what fixes it · synthetic hackathon data, Apr–Sep 2026</div>
+          <div className="muted small">Why deliveries are late, and what fixes it · synthetic hackathon data, Apr–Sep 2026 <ProviderBadge s={llm} /></div>
         </div>
         <nav>
-          {TABS.map((t) => (
-            <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>{t.label}</button>
+          {(['Evidence', 'AI agents'] as const).map((g) => (
+            <div key={g} className="navgroup"><span className="navlabel">{g}</span>
+              {TABS.filter((t) => t.group === g).map((t) => (
+                <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>{t.label}</button>
+              ))}
+            </div>
           ))}
         </nav>
       </header>
@@ -377,6 +389,10 @@ export default function App() {
         {tab === 'stock' && <StockPage />}
         {tab === 'accounts' && <AccountsPage />}
         {tab === 'whatif' && <WhatIfPage />}
+        {tab === 'intake' && <IntakePage />}
+        {tab === 'alerts' && <AlertsPage />}
+        {tab === 'ask' && <AskPage />}
+        {tab === 'quality' && <QualityPage />}
       </main>
     </div>
   )

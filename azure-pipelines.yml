@@ -9,7 +9,8 @@ steps:
       pip install -r requirements-dev.txt
       ruff check app tests
       pytest -q
-    displayName: API tests
+      python -m app.evals --limit 300 --alerts 20      # baseline run; add --provider claude_foundry --enforce once quota exists
+    displayName: API tests + prompt evals
   - task: NodeTool@0
     inputs: { versionSpec: '22.x' }
   - script: |
