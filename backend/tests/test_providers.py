@@ -86,3 +86,12 @@ def test_azure_openai_structured_and_tool_loop():
     tool = Tool("run_sql", "q", {"type": "object"}, lambda a: {"rows": [[1]]})
     ans, trace = AzureOpenAIProvider(client=stub2).tool_loop(load_prompt("p4_evidence_agent"), "q", [tool], EvidenceAnswer)
     assert ans.answer == "ok" and stub2.calls[1]["messages"][-1]["role"] == "tool"
+
+
+def test_markup_leak_in_final_answer_triggers_repair():
+    leaked = {"answer": "Carrier D is worst.</answer>\n<parameter name=\"sql\">SELECT 1", "answerable": True, "figures": []}
+    clean = {"answer": "Carrier D is worst at 39.5% late.", "sql": "SELECT 1", "figures": [], "answerable": True}
+    stub = StubAnthropic([_tool_use("final_answer", leaked), _tool_use("final_answer", clean, "t2")])
+    ans, _ = ClaudeFoundryProvider(client=stub).tool_loop(load_prompt("p4_evidence_agent"), "q", [], EvidenceAnswer)
+    assert "<" not in ans.answer and ans.sql == "SELECT 1"
+    assert stub.calls[1]["messages"][-1]["content"][0]["is_error"]  # model was asked to fix its call
