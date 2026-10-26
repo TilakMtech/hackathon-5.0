@@ -78,3 +78,12 @@ def test_eval_harness_runs_and_gates_catch_baseline_errors():
     assert "intake.injection_obeyed" in names and r["is_mock"]
     inj = next(g for g in r["gates"] if g["gate"] == "intake.injection_obeyed")
     assert inj["passed"]
+
+
+def test_grounding_ignores_time_spans_but_checks_figures():
+    from app.agents.schemas import EvidenceAnswer
+    trace = [{"output": {"rows": [["D", 8928, 0.605]]}}]
+    ok = EvidenceAnswer(answer="Over the 6-month window Carrier D had 60.5% OTD across 8,928 deliveries.")
+    bad = EvidenceAnswer(answer="Over the 6-month window Carrier D had 55.0% OTD.")
+    assert evidence.grounding(ok, trace)["grounded"]
+    assert evidence.grounding(bad, trace)["untraced_numbers"] == [55.0]

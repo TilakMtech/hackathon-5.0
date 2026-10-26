@@ -85,7 +85,9 @@ def grounding(answer: EvidenceAnswer, trace: list[dict]) -> dict:
             if vals:
                 pool.append(sum(vals))
     # labels like "Tier 2", "C049", "W3", "2026-08" are names, not figures
-    text = re.sub(r"\b(Tier|Carrier|W)\s?\d+|\bC\d{3}\b|\d{4}-\d{2}(-\d{2})?", " ", answer.answer)
+    # time spans like "6-month window" or "3 days" describe the data, they are not figures
+    text = re.sub(r"\b(Tier|Carrier|W)\s?\d+|\bC\d{3}\b|\d{4}-\d{2}(-\d{2})?"
+                  r"|\b\d{1,2}[- ](?:day|week|month|quarter|year)s?\b", " ", answer.answer, flags=re.I)
     nums = [n for n in _numbers(text) if not (2026 <= n <= 2027)]
 
     def found(n: float) -> bool:
