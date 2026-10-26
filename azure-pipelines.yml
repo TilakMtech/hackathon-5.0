@@ -1,0 +1,19 @@
+# Azure DevOps CI: tests the API and type-checks/builds the dashboard on every push
+trigger: [main]
+pool: { vmImage: ubuntu-latest }
+steps:
+  - task: UsePythonVersion@0
+    inputs: { versionSpec: '3.12' }
+  - script: |
+      cd backend
+      pip install -r requirements-dev.txt
+      ruff check app tests
+      pytest -q
+    displayName: API tests
+  - task: NodeTool@0
+    inputs: { versionSpec: '22.x' }
+  - script: |
+      cd frontend
+      npm ci
+      npm run build
+    displayName: Dashboard build

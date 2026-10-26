@@ -1,0 +1,22 @@
+# Azure Developer CLI (azd) project. From this folder:  azd up
+name: halcyon-otd
+metadata:
+  template: halcyon-otd@0.1.0
+infra:
+  provider: bicep
+  path: infra
+services:
+  api:
+    project: ./backend
+    language: python
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true
+  web:
+    project: ./frontend
+    language: js
+    host: containerapp
+    docker:
+      path: ./Dockerfile
+      remoteBuild: true

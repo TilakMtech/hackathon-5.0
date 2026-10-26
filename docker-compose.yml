@@ -1,0 +1,15 @@
+# Run the whole app on one machine (laptop, Cloud PC or an Azure VM):  docker compose up --build
+services:
+  api:
+    build: ./backend
+    environment:
+      OTD_CORS_ORIGINS: "*"
+    ports: ["8000:8000"]
+    restart: unless-stopped
+  web:
+    build: ./frontend
+    environment:
+      API_URL: http://api:8000
+    ports: ["80:80"]
+    depends_on: [api]
+    restart: unless-stopped
