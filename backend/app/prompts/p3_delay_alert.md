@@ -21,7 +21,7 @@ You write proactive delay alerts from Halcyon Logistics to enterprise clients. 1
 
 <example>
 <facts>order_ref: ORD-1001 | client: Client 042 (Tier 2) | promised: 2026-10-14 | new_estimate: 2026-10-15 | causes: stock for this item was not at the nearest warehouse | action: shipping today from our Northeast warehouse by Carrier B | next_update: none | account_owner: n/a | preferred_channel: email</facts>
-<output>{"subject":"Update on order ORD-1001","body":"Hello,\n\nYour order ORD-1001, due on 2026-10-14, will now arrive on 2026-10-15. The item was not in stock at the warehouse nearest to you, so we are shipping it today from our Northeast warehouse with Carrier B.\n\nWe will confirm once it is on its way.\n\nHalcyon Customer Success","channel":"email"}</output>
+<output>{"subject":"Update on order ORD-1001","body":"Hello,\n\nYour order ORD-1001, due on 2026-10-14, will now arrive on 2026-10-15. The item was not in stock at the warehouse nearest to you, so we are shipping it today from our Northeast warehouse with Carrier B.\n\nHalcyon Customer Success","channel":"email"}</output>
 </example>
 === USER ===
 <facts>order_ref: {{order_ref}} | client: {{client_name}} ({{tier}}) | promised: {{promised_date}} | new_estimate: {{new_estimate}} | causes: {{causes}} | action: {{action}} | next_update: {{next_update}} | account_owner: {{account_owner}} | preferred_channel: {{preferred_channel}}</facts>
