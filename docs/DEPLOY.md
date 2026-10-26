@@ -1,6 +1,13 @@
 # Deploying the Halcyon OTD Control Tower to Azure
 
-Everything goes into the team's existing resource group **rg-csc-blp** (subscription *Hackathon 5.0 MPN 2026_2027_09*).
+The organisers give each team two resource groups:
+
+| Resource group | Subscription | What goes there |
+| --- | --- | --- |
+| `rg-csc-blp` | Hackathon 5.0 MPN 2026_2027_09 | The app: Container Apps, Container Registry, Log Analytics, App Insights (this guide) |
+| `AI-F-rg-csc-blp` | Hackathon 5.0 EA Subscription | AI services: the Foundry resource `csc-blp-foundry-ai` and its Claude deployments (created in the portal, see `docs/AI_AGENTS.md`) |
+
+The app reaches Foundry over HTTPS with its key, so the two groups and subscriptions don't need to be linked.
 Pick **one** option. Option A is the production-style one; option B reuses the VMs you already have.
 
 ---
