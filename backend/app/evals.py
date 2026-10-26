@@ -96,7 +96,7 @@ def eval_intake(emails: list[dict], provider: str) -> tuple[dict, list[dict], li
                                                                  ("invented " + "/".join(invented), bool(invented)),
                                                                  ("missed missing field", not recall_ok), ("obeyed injection", bool(obeyed))] if bad),
                           "expected": truth, "got": {k: x[k] for k in ("order_lines", "commitment_type", "requested_date", "delivery_address")},
-                          "decision": g["decision"]})
+                          "decision": g["decision"], "notes": x.get("notes")})
         if r["address_request"]:
             reqs.append({"email_id": e["email_id"], **r["address_request"]["checks"]})
     ok = [r for r in rows if "error" not in r]
@@ -182,8 +182,10 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
             target = gold * 100 if q["kind"] == "pct" else gold
             ok = a["answerable"] and any(abs(x - target) <= max(0.051, abs(target) * 0.001) for x in nums)
             grounded = bool(r["grounding"] and r["grounding"]["grounded"])
-            if not ok:
-                fails.append({"id": q["id"], "question": q["question"], "expected": round(target, 2), "answer": a["answer"]})
+            if not ok or not grounded:
+                fails.append({"id": q["id"], "question": q["question"], "expected": round(target, 2), "answer": a["answer"],
+                              "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded)] if bad),
+                              "untraced": (r["grounding"] or {}).get("untraced_numbers"), "sql": a.get("sql")})
         rows.append({"id": q["id"], "ok": ok, "kind": q["kind"], "grounded": grounded})
     ans = [r for r in rows if r["kind"] != "refuse"]
     ref = [r for r in rows if r["kind"] == "refuse"]
@@ -193,28 +195,40 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
              "grounded_rate": sum(r["grounded"] for r in ans) / max(len(ans), 1)}, fails)
 
 
-def run(provider: str | None = None, limit: int = 300, n_alerts: int = 20, judge: bool | None = None) -> dict:
+PARTS = ("intake", "alerts", "evidence")
+
+
+def run(provider: str | None = None, limit: int = 300, n_alerts: int = 20, judge: bool | None = None,
+        only: str | None = None) -> dict:
+    """Run the eval suite. only = "intake" | "alerts" | "evidence" runs one part; its other gates show n/a."""
     p = get_provider(provider)
     judge = (p.name != "mock") if judge is None else judge
     t0 = time.time()
-    intake_m, intake_f, reqs = eval_intake(load_emails()[:limit], p.name)
-    alerts_m, alerts_f = eval_alerts(n_alerts, p.name, judge)
-    ev_m, ev_f = eval_evidence(p.name)
-    metrics = {"intake": intake_m, "requests": eval_requests(reqs), "alerts": alerts_m, "evidence": ev_m}
+    do = set(PARTS) if only is None else {only}
+    metrics: dict = {"intake": {}, "requests": {}, "alerts": {}, "evidence": {}}
+    intake_f = alerts_f = ev_f = []
+    if "intake" in do:
+        metrics["intake"], intake_f, reqs = eval_intake(load_emails()[:limit], p.name)
+        metrics["requests"] = eval_requests(reqs)
+    if "alerts" in do:
+        metrics["alerts"], alerts_f = eval_alerts(n_alerts, p.name, judge)
+    if "evidence" in do:
+        metrics["evidence"], ev_f = eval_evidence(p.name)
     gates = []
     for name, (op, thr, why) in GATES.items():
         area, key = name.split(".")
         val = metrics[area].get(key)
         if val is None:
+            skipped = (area == "requests" and "intake" not in do) or (area != "requests" and area not in do)
             gates.append({"gate": name, "value": None, "op": op, "threshold": thr, "passed": None, "why": why,
-                          "note": "not measured (judge runs only with a real model)"})
+                          "note": "not run (--only)" if skipped else "not measured (judge runs only with a real model)"})
             continue
         passed = val >= thr if op == ">=" else val <= thr
         gates.append({"gate": name, "value": round(val, 4), "op": op, "threshold": thr, "passed": passed, "why": why})
     calls = recent_calls(500)
     report = {
         "run_at": datetime.now(UTC).isoformat(timespec="seconds"),
-        "provider": p.name, "models": {"fast": p.model_for("fast"), "smart": p.model_for("smart")},
+        "provider": p.name, "only": only, "models": {"fast": p.model_for("fast"), "smart": p.model_for("smart")},
         "is_mock": p.name == "mock",
         "prompts": [pr.ref for pr in all_prompts()],
         "duration_s": round(time.time() - t0, 1),
@@ -246,6 +260,16 @@ def to_markdown(r: dict) -> str:
         res = "n/a" if g["passed"] is None else ("PASS" if g["passed"] else "FAIL")
         lines.append(f"| {g['gate']} | {g['value']} | {g['op']} {g['threshold']} | {res} |")
     lines += ["", f"Prompts: {', '.join(r['prompts'])}"]
+    f = r.get("failures", {})
+    if any(f.values()):
+        lines += ["", "## Failures (full detail in reports/evals/latest.json)", ""]
+        for x in f.get("intake", []):
+            lines.append(f"- intake {x['email_id']} (layout {x.get('format')}): {x['problem']}"
+                         + (f"; got {x['got']['delivery_address']}; notes: {x.get('notes')}" if "got" in x else ""))
+        for x in f.get("alerts", []):
+            lines.append(f"- alert {x['delivery_id']}: " + (x.get("problem") or f"checks passed={x['checks']['passed']}, judge {x.get('judge')}"))
+        for x in f.get("evidence", []):
+            lines.append(f"- evidence {x['id']}: {x.get('problem')}; untraced {x.get('untraced')}; answer: {x.get('answer')}")
     return "\n".join(lines) + "\n"
 
 
@@ -255,12 +279,14 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=300)
     ap.add_argument("--alerts", type=int, default=20)
     ap.add_argument("--judge", action=argparse.BooleanOptionalAction, default=None)
+    ap.add_argument("--only", choices=PARTS, help="run just one part of the suite (cheaper re-runs)")
     ap.add_argument("--enforce", action="store_true", help="exit 1 if any gate fails")
     a = ap.parse_args()
     global VERBOSE
     VERBOSE = True
-    _progress(f"starting evals: provider={a.provider or 'from .env'}, {a.limit} emails, {a.alerts} alerts, 16 questions")
-    r = run(a.provider, a.limit, a.alerts, a.judge)
+    _progress(f"starting evals: provider={a.provider or 'from .env'}, part={a.only or 'all'}, "
+              f"{a.limit} emails, {a.alerts} alerts, 16 questions")
+    r = run(a.provider, a.limit, a.alerts, a.judge, a.only)
     _progress(f"done in {r['duration_s']}s; report saved to reports/evals/latest.json")
     print(to_markdown(r))
     if a.enforce and not r["all_gates_passed"]:
