@@ -38,9 +38,9 @@ The **mock** provider is a rule-based parser, not a model. It lets the team work
 
 ## Switch to Claude
 
-1. Deploy `claude-haiku-5-5` and `claude-sonnet-5-5` in Foundry `csc-blp-foundry-ai` (Central US, resource group `AI-F-rg-csc-blp`, subscription "Hackathon 5.0 EA Subscription").
+1. Deploy `claude-haiku-5-5` and `claude-sonnet-5-5` in Foundry `csc-blp-foundry-cus` (Central US, resource group `AI-F-rg-csc-blp`, subscription "Hackathon 5.0 EA Subscription").
 2. `cp backend/.env.example backend/.env`, set `OTD_LLM_PROVIDER=claude_foundry` and paste the key into `ANTHROPIC_FOUNDRY_API_KEY`.
 3. Restart the API, then run `python -m app.evals --provider claude_foundry --enforce`.
 
 Azure OpenAI fallback: the same steps with `OTD_LLM_PROVIDER=azure_openai` and the `OTD_AOAI_*` values.
-On Azure: `azd env set OTD_LLM_PROVIDER claude_foundry`, `azd env set FOUNDRY_RESOURCE csc-blp-foundry-ai`, `azd env set FOUNDRY_API_KEY <key>`, then `azd up`. The key is stored as a Container Apps secret.
+On Azure: `azd env set OTD_LLM_PROVIDER claude_foundry`, `azd env set FOUNDRY_RESOURCE csc-blp-foundry-cus`, `azd env set FOUNDRY_API_KEY <key>`, then `azd up`. The key is stored as a Container Apps secret.
