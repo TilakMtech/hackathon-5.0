@@ -71,8 +71,34 @@ def _numbers(text: str) -> list[float]:
     return [float(x.replace(",", "")) for x in re.findall(r"(?<![\w-])\d[\d,]*\.?\d*", text)]
 
 
+MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
+NON_FIGURES = re.compile(
+    r"\b(Tier|Carrier|W)\s?\d+|\bC\d{3}\b|\d{4}-\d{2}(-\d{2})?"          # labels: "Tier 2", "C049", "W3", "2026-08"
+    r"|\b\d{1,2}[- ](?:day|week|month|quarter|year)s?\b"                 # time spans: "6-month window", "3 days"
+    rf"|\b{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b(?:,?\s+\d{{4}})?"         # dates: "April 1", "Sep 30, 2026"
+    rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?=\W|$)", re.I)             # dates: "1 April"
+SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
+FIGURE = re.compile(r"(?<![\w-])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
+
+
+def _figures(text: str) -> list[tuple[float, float]]:
+    """Numbers in prose as (value, rounding tolerance); "$14.2 million" -> (14_200_000, 50_000)."""
+    out = []
+    for num, unit in FIGURE.findall(NON_FIGURES.sub(" ", text)):
+        v = float(num.replace(",", ""))
+        if not unit and 2026 <= v <= 2027:
+            continue  # a year
+        if unit:
+            decimals = len(num.split(".")[1]) if "." in num else 0
+            s = SCALE[unit.lower()]
+            out.append((v * s, 0.5 * 10 ** -decimals * s))
+        else:
+            out.append((v, 0.0))
+    return out
+
+
 def grounding(answer: EvidenceAnswer, trace: list[dict]) -> dict:
-    """Every number in the answer should be traceable to a query result (allowing % and rounding)."""
+    """Every figure in the answer should be traceable to a query result (allowing %, rounding and K/M/B units)."""
     pool: list[float] = []
     for step in trace:
         rows = step.get("output", {}).get("rows", []) or []
@@ -84,17 +110,13 @@ def grounding(answer: EvidenceAnswer, trace: list[dict]) -> dict:
             vals = [float(v) for v in col if isinstance(v, int | float)]
             if vals:
                 pool.append(sum(vals))
-    # labels like "Tier 2", "C049", "W3", "2026-08" are names, not figures
-    # time spans like "6-month window" or "3 days" describe the data, they are not figures
-    text = re.sub(r"\b(Tier|Carrier|W)\s?\d+|\bC\d{3}\b|\d{4}-\d{2}(-\d{2})?"
-                  r"|\b\d{1,2}[- ](?:day|week|month|quarter|year)s?\b", " ", answer.answer, flags=re.I)
-    nums = [n for n in _numbers(text) if not (2026 <= n <= 2027)]
 
-    def found(n: float) -> bool:
-        return any(abs(n - p) <= max(0.051, abs(p) * 0.005) or round(p) == n for p in pool)
+    def found(n: float, tol: float) -> bool:
+        return any(abs(n - p) <= max(0.051, abs(p) * 0.005, tol) or round(p) == n for p in pool)
 
-    untraced = [n for n in nums if not found(n)]
-    return {"numbers_in_answer": len(nums), "untraced_numbers": untraced, "grounded": not untraced}
+    figs = _figures(answer.answer)
+    untraced = [n for n, tol in figs if not found(n, tol)]
+    return {"numbers_in_answer": len(figs), "untraced_numbers": untraced, "grounded": not untraced}
 
 
 def ask(question: str, provider_name: str | None = None) -> dict:

@@ -87,3 +87,13 @@ def test_grounding_ignores_time_spans_but_checks_figures():
     bad = EvidenceAnswer(answer="Over the 6-month window Carrier D had 55.0% OTD.")
     assert evidence.grounding(ok, trace)["grounded"]
     assert evidence.grounding(bad, trace)["untraced_numbers"] == [55.0]
+
+
+def test_grounding_handles_prose_dates_and_scaled_money():
+    from app.agents.schemas import EvidenceAnswer
+    trace = [{"output": {"rows": [[872460.0, 4847, 14213650.0, 9]]}}]
+    ok = EvidenceAnswer(answer="We paid $872,460 across 4,847 penalties (April 1 - September 30, 2026). "
+                               "$14.2 million of revenue is at risk from 9 accounts.")
+    assert evidence.grounding(ok, trace)["grounded"]
+    bad = EvidenceAnswer(answer="$15.1 million is at risk, about 3,524 late deliveries.")
+    assert evidence.grounding(bad, trace)["untraced_numbers"] == [15_100_000.0, 3524.0]
