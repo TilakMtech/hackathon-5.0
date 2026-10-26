@@ -82,7 +82,7 @@ If the VM is Windows, tell Claude and I'll give you the Windows steps.
 
 ```bash
 # terminal 1
-cd backend && pip install -r requirements-dev.txt && uvicorn app.main:app --reload --port 8000
+cd backend && pip install -r requirements-dev.txt && uvicorn app.main:app --reload --reload-dir app --port 8000
 # terminal 2
 cd frontend && npm ci && npm run dev        # open http://localhost:5173
 ```
