@@ -254,7 +254,7 @@ export function QualityPage() {
   const i = r?.metrics.intake
   return (
     <>
-      <p className="lead">Prompts are tested like code. Every change runs against a golden set of 300 synthetic emails covering all 14 layouts, with incomplete addresses and 20 prompt-injection attempts, plus 20 alerts and 16 leadership questions. A failed gate blocks the release in CI.</p>
+      <p className="lead">Prompts are tested like code. Every change runs against a golden set of 300 synthetic emails covering all 14 layouts, with incomplete addresses and 20 prompt-injection attempts, plus 20 alerts and 17 leadership questions. A failed gate blocks the release in CI.</p>
       <div className="row"><button className="primary" onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run evals now'}</button>{r && <span className="muted small">Last run {r.run_at} · {r.provider} · {r.duration_s}s · tokens in/out/cached {r.tokens.input}/{r.tokens.output}/{r.tokens.cache_read}</span>}</div>
       <Err msg={error} />
       {r && i && (

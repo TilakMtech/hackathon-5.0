@@ -97,3 +97,30 @@ def test_grounding_handles_prose_dates_and_scaled_money():
     assert evidence.grounding(ok, trace)["grounded"]
     bad = EvidenceAnswer(answer="$15.1 million is at risk, about 3,524 late deliveries.")
     assert evidence.grounding(bad, trace)["untraced_numbers"] == [15_100_000.0, 3524.0]
+
+
+def test_guardrail_catches_postcode_written_but_not_extracted():
+    email = "New order:\n- SKU-47388: 50 pcs\n- Speed: next day\n- Ship to: 2546 Industrial Road, Madison, WI 53322"
+    x = Extraction(order_lines=[{"sku": "SKU-47388", "qty": 50}], commitment_type="next_day",
+                   delivery_address={"line1": "2546 Industrial Road", "city": "Madison", "state": "WI", "postcode": None},
+                   missing_fields=["postcode"], evidence={"line1": "2546 Industrial Road"}, confidence=0.7)
+    g = intake.guardrails(email, "", x, "2026-10-12T07:30")
+    assert g["decision"] == "human_review"  # a person checks instead of emailing the client for a postcode they gave
+    assert any("53322 appears after WI" in f for f in g["flags"])
+
+
+def test_evidence_eval_flags_unrequested_causes():
+    import json
+    import re
+
+    from app.evals import QUESTIONS
+    q = next(q for q in json.loads(QUESTIONS.read_text()) if q["id"] == "Q13")
+    seen = ("Carrier D is the weakest performer at 60.5%. Carrier D has no API integration and no preferred-supplier "
+            "agreement, which distinguishes it from the better-performing carriers.")
+    assert re.search(q["forbid"], seen, re.I)
+    assert not re.search(q["forbid"], "Carrier D is worst: 60.5% on time across 8,928 deliveries.", re.I)
+    assert re.search(q["expect"], "Carrier D is worst")
+
+
+def test_extraction_schema_puts_evidence_first():
+    assert next(iter(Extraction.model_json_schema()["properties"])) == "evidence"

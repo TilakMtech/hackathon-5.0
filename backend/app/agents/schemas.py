@@ -32,12 +32,13 @@ class Address(BaseModel):
 
 
 class Extraction(BaseModel):
+    # field order is generation order: the model quotes the email first, then extracts from its own quotes
+    evidence: dict[str, str] = Field(default_factory=dict, description="field name -> exact quote from the email")
     order_lines: list[OrderLine]
     commitment_type: Literal["same_day", "next_day", "standard", "unknown"]
     requested_date: str | None = Field(None, description="YYYY-MM-DD or null")
     delivery_address: Address
     missing_fields: list[AddressField] = Field(default_factory=list)
-    evidence: dict[str, str] = Field(default_factory=dict, description="field name -> exact quote from the email")
     confidence: float = Field(ge=0, le=1)
     suspicious_instructions: bool = False
     notes: str | None = None

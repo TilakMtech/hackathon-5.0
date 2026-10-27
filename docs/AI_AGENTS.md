@@ -30,7 +30,7 @@ Rule of the system: **Claude handles language, code handles numbers and decision
 
 - 300 synthetic emails (14 layouts, about 29% incomplete addresses, 20 injections) against ground truth;
 - 20 alerts for the accounts threatening to leave (rule checks, plus the judge on real models);
-- 16 leadership questions (12 with SQL-verified answers, 4 that must be declined).
+- 17 leadership questions (12 with SQL-verified answers, 1 checked by name, 4 that must be declined). Carrier questions also fail if the answer offers a cause nobody asked for.
 
 It writes `reports/evals/latest.json` and `latest.md`, shown on the **Prompt quality** tab. With `--enforce`, any failed gate exits 1, so a prompt change that regresses is blocked in CI. The gates are listed in `app/evals.py` (`GATES`).
 

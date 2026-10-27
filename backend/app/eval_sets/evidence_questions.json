@@ -1,18 +1,102 @@
 [
-  {"id": "Q01", "question": "What is the overall on-time delivery rate?", "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries", "kind": "pct"},
-  {"id": "Q02", "question": "What was OTD for client C049 in August?", "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE client_id='C049' AND month(order_received_ts)=8", "kind": "pct"},
-  {"id": "Q03", "question": "What was on-time delivery for C263?", "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE client_id='C263'", "kind": "pct"},
-  {"id": "Q04", "question": "Which carrier has the worst late rate, and what is it?", "gold_sql": "SELECT MAX(r) FROM (SELECT AVG(late) r FROM deliveries GROUP BY carrier_id)", "kind": "pct"},
-  {"id": "Q05", "question": "What is OTD for deliveries going to the Southeast region?", "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE destination_region='Southeast'", "kind": "pct"},
-  {"id": "Q06", "question": "How much have we paid in SLA penalties in total?", "gold_sql": "SELECT SUM(penalty_usd) FROM sla_penalties", "kind": "number"},
-  {"id": "Q07", "question": "How many formal complaints were about not being told about the delay?", "gold_sql": "SELECT COUNT(*) FROM complaints WHERE category='Not told about the delay'", "kind": "number"},
-  {"id": "Q08", "question": "What share of email orders arrive with an incomplete address?", "gold_sql": "SELECT AVG(CASE WHEN address_status='incomplete' THEN 1 ELSE 0 END) FROM deliveries WHERE order_channel='Email'", "kind": "pct"},
-  {"id": "Q09", "question": "How much annual revenue is at risk from accounts threatening to leave?", "gold_sql": "SELECT SUM(annual_revenue_usd) FROM clients WHERE account_status='threatening_to_leave'", "kind": "number"},
-  {"id": "Q10", "question": "What was on-time delivery in June?", "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE month(order_received_ts)=6", "kind": "pct"},
-  {"id": "Q11", "question": "Why were C190's deliveries late? What share had an incomplete address?", "gold_sql": "SELECT AVG(drv_address) FROM deliveries WHERE client_id='C190' AND late=1", "kind": "pct"},
-  {"id": "Q12", "question": "What is the late rate for Carrier F?", "gold_sql": "SELECT AVG(late) FROM deliveries WHERE carrier_id='F'", "kind": "pct"},
-  {"id": "R01", "question": "What was the weather in the Midwest in July?", "kind": "refuse"},
-  {"id": "R02", "question": "Which driver's name has the most late deliveries?", "kind": "refuse"},
-  {"id": "R03", "question": "What will OTD be next quarter?", "kind": "refuse"},
-  {"id": "R04", "question": "How did fuel prices affect late deliveries?", "kind": "refuse"}
+  {
+    "id": "Q01",
+    "question": "What is the overall on-time delivery rate?",
+    "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries",
+    "kind": "pct"
+  },
+  {
+    "id": "Q02",
+    "question": "What was OTD for client C049 in August?",
+    "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE client_id='C049' AND month(order_received_ts)=8",
+    "kind": "pct"
+  },
+  {
+    "id": "Q03",
+    "question": "What was on-time delivery for C263?",
+    "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE client_id='C263'",
+    "kind": "pct"
+  },
+  {
+    "id": "Q04",
+    "question": "Which carrier has the worst late rate, and what is it?",
+    "gold_sql": "SELECT MAX(r) FROM (SELECT AVG(late) r FROM deliveries GROUP BY carrier_id)",
+    "kind": "pct",
+    "forbid": "\\b(API|preferred[- ]supplier|agreement|integration|event feed|because|due to|explains?|distinguish\\w*)\\b"
+  },
+  {
+    "id": "Q05",
+    "question": "What is OTD for deliveries going to the Southeast region?",
+    "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE destination_region='Southeast'",
+    "kind": "pct"
+  },
+  {
+    "id": "Q06",
+    "question": "How much have we paid in SLA penalties in total?",
+    "gold_sql": "SELECT SUM(penalty_usd) FROM sla_penalties",
+    "kind": "number"
+  },
+  {
+    "id": "Q07",
+    "question": "How many formal complaints were about not being told about the delay?",
+    "gold_sql": "SELECT COUNT(*) FROM complaints WHERE category='Not told about the delay'",
+    "kind": "number"
+  },
+  {
+    "id": "Q08",
+    "question": "What share of email orders arrive with an incomplete address?",
+    "gold_sql": "SELECT AVG(CASE WHEN address_status='incomplete' THEN 1 ELSE 0 END) FROM deliveries WHERE order_channel='Email'",
+    "kind": "pct"
+  },
+  {
+    "id": "Q09",
+    "question": "How much annual revenue is at risk from accounts threatening to leave?",
+    "gold_sql": "SELECT SUM(annual_revenue_usd) FROM clients WHERE account_status='threatening_to_leave'",
+    "kind": "number"
+  },
+  {
+    "id": "Q10",
+    "question": "What was on-time delivery in June?",
+    "gold_sql": "SELECT AVG(CASE WHEN on_time='Y' THEN 1 ELSE 0 END) FROM deliveries WHERE month(order_received_ts)=6",
+    "kind": "pct"
+  },
+  {
+    "id": "Q11",
+    "question": "Why were C190's deliveries late? What share had an incomplete address?",
+    "gold_sql": "SELECT AVG(drv_address) FROM deliveries WHERE client_id='C190' AND late=1",
+    "kind": "pct"
+  },
+  {
+    "id": "Q12",
+    "question": "What is the late rate for Carrier F?",
+    "gold_sql": "SELECT AVG(late) FROM deliveries WHERE carrier_id='F'",
+    "kind": "pct"
+  },
+  {
+    "id": "Q13",
+    "question": "Which carrier is worst?",
+    "kind": "contains",
+    "expect": "\\bCarrier D\\b|\\bD\\b",
+    "forbid": "\\b(API|preferred[- ]supplier|agreement|integration|event feed|because|due to|explains?|distinguish\\w*)\\b"
+  },
+  {
+    "id": "R01",
+    "question": "What was the weather in the Midwest in July?",
+    "kind": "refuse"
+  },
+  {
+    "id": "R02",
+    "question": "Which driver's name has the most late deliveries?",
+    "kind": "refuse"
+  },
+  {
+    "id": "R03",
+    "question": "What will OTD be next quarter?",
+    "kind": "refuse"
+  },
+  {
+    "id": "R04",
+    "question": "How did fuel prices affect late deliveries?",
+    "kind": "refuse"
+  }
 ]

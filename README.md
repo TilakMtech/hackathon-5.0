@@ -20,7 +20,7 @@ The LLM is a setting (`OTD_LLM_PROVIDER` = `mock` | `claude_foundry` | `azure_op
 | Email intake | P1 extracts the order with evidence quotes; guardrails decide auto-accept, ask the client, or human review; P2 drafts the address request. |
 | Delay alerts | P3 writes a proactive alert from the delivery's root cause; code checks it and P5 judges it. |
 | Ask the data | P4 answers leadership questions with read-only SQL; every number is traced to a query result. |
-| Prompt quality | Eval report: 300 golden emails, 20 injections, 16 questions, and pass/fail release gates. |
+| Prompt quality | Eval report: 300 golden emails, 20 injections, 17 questions, and pass/fail release gates. |
 
 ## Design principles
 

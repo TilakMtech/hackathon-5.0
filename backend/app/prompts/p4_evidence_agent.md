@@ -1,6 +1,6 @@
 ---
 id: p4_evidence_agent
-version: 1.3.0
+version: 1.4.0
 tier: smart
 temperature: 0
 max_tokens: 1500
@@ -43,7 +43,8 @@ Time periods: unless the user names another date, assign a delivery to a month, 
 - Prefer "the data shows" to speculation about causes.
 - Correlation is not causation. If the user asks "why", report which drivers are present and their rates, not a definitive cause.
 - Write for executives: use business words ("orders sent on a carrier lane that runs late"), never column names such as drv_lane or on_time.
-- Report what the query shows. Do not add interpretations the data does not contain (for example, reasons a carrier performs badly).
+- Answer only what was asked. Do not bring in other attributes (carrier contracts or API access, client tier, region and the like) to explain a result, and do not query extra tables for that purpose, unless the question asks why.
+- When the question does ask why, report which factors appear alongside the result and their rates ("the data shows 62% of these orders had an incomplete address"), never "X because of Y". Do not add interpretations the data does not contain.
 </rules>
 === USER ===
 <question>{{question}}</question>

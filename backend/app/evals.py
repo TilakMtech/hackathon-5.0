@@ -41,6 +41,7 @@ GATES: dict[str, tuple[str, float, str]] = {
     "evidence.answer_accuracy": (">=", 0.9, "leadership numbers must match the data"),
     "evidence.refusal_accuracy": (">=", 1.0, "say 'the data cannot answer' instead of guessing"),
     "evidence.grounded_rate": (">=", 0.95, "every number in an answer must come from a query result"),
+    "evidence.no_unrequested_causes": (">=", 1.0, "no reasons the question did not ask for (correlation is not causation)"),
 }
 
 
@@ -169,12 +170,21 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
         try:
             r = evidence.ask(q["question"], provider)
         except Exception as exc:
-            rows.append({"id": q["id"], "ok": False, "kind": q["kind"], "grounded": False})
+            rows.append({"id": q["id"], "ok": False, "kind": q["kind"], "grounded": False, "forbid": bool(q.get("forbid")), "clean": False})
             fails.append({"id": q["id"], "problem": f"error: {exc}"})
             continue
         a = r["answer"]
+        clean = not (q.get("forbid") and re.search(q["forbid"], a["answer"], re.I))
         if q["kind"] == "refuse":
             ok, grounded = not a["answerable"], True
+        elif q["kind"] == "contains":
+            ok = a["answerable"] and bool(re.search(q["expect"], a["answer"]))
+            grounded = bool(r["grounding"] and r["grounding"]["grounded"])
+            if not ok or not grounded or not clean:
+                fails.append({"id": q["id"], "question": q["question"], "answer": a["answer"],
+                              "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded),
+                                                                     ("unrequested cause", not clean)] if bad),
+                              "untraced": (r["grounding"] or {}).get("untraced_numbers"), "sql": a.get("sql")})
         else:
             gold = evidence.run_sql(q["gold_sql"])["rows"][0][0]
             text = a["answer"] + " " + " ".join(f["value"] for f in a["figures"])
@@ -182,17 +192,19 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
             target = gold * 100 if q["kind"] == "pct" else gold
             ok = a["answerable"] and any(abs(x - target) <= max(0.051, abs(target) * 0.001) for x in nums)
             grounded = bool(r["grounding"] and r["grounding"]["grounded"])
-            if not ok or not grounded:
+            if not ok or not grounded or not clean:
                 fails.append({"id": q["id"], "question": q["question"], "expected": round(target, 2), "answer": a["answer"],
-                              "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded)] if bad),
+                              "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded),
+                                                                     ("unrequested cause", not clean)] if bad),
                               "untraced": (r["grounding"] or {}).get("untraced_numbers"), "sql": a.get("sql")})
-        rows.append({"id": q["id"], "ok": ok, "kind": q["kind"], "grounded": grounded})
+        rows.append({"id": q["id"], "ok": ok, "kind": q["kind"], "grounded": grounded, "forbid": bool(q.get("forbid")), "clean": clean})
     ans = [r for r in rows if r["kind"] != "refuse"]
     ref = [r for r in rows if r["kind"] == "refuse"]
     return ({"questions": len(rows),
              "answer_accuracy": sum(r["ok"] for r in ans) / max(len(ans), 1),
              "refusal_accuracy": sum(r["ok"] for r in ref) / max(len(ref), 1),
-             "grounded_rate": sum(r["grounded"] for r in ans) / max(len(ans), 1)}, fails)
+             "grounded_rate": sum(r["grounded"] for r in ans) / max(len(ans), 1),
+             "no_unrequested_causes": sum(r["clean"] for r in rows if r["forbid"]) / max(sum(r["forbid"] for r in rows), 1)}, fails)
 
 
 PARTS = ("intake", "alerts", "evidence")
@@ -285,7 +297,7 @@ def main() -> None:
     global VERBOSE
     VERBOSE = True
     _progress(f"starting evals: provider={a.provider or 'from .env'}, part={a.only or 'all'}, "
-              f"{a.limit} emails, {a.alerts} alerts, 16 questions")
+              f"{a.limit} emails, {a.alerts} alerts, {len(json.loads(QUESTIONS.read_text()))} questions")
     r = run(a.provider, a.limit, a.alerts, a.judge, a.only)
     _progress(f"done in {r['duration_s']}s; report saved to reports/evals/latest.json")
     print(to_markdown(r))

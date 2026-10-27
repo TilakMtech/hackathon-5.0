@@ -49,6 +49,12 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
     if st in ZIP_PREFIX_BY_STATE and pc and not pc.startswith(ZIP_PREFIX_BY_STATE[st]):
         flags.append(f"ZIP {pc} does not match state {st}")
 
+    # 3b. a postcode is written right after the state but was not extracted
+    if st and not pc:
+        m = re.search(rf"\b{re.escape(st)}\s+(\d{{5}})\b", email_body, re.I)
+        if m:
+            flags.append(f"postcode {m.group(1)} appears after {st} in the email but was not extracted")
+
     # 4. quantities and SKUs must be plausible and present in the email
     for line in x.order_lines:
         if line.qty > 5000:
