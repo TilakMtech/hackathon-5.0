@@ -28,7 +28,17 @@ class Address(BaseModel):
     line1: str | None = Field(None, description="Street number and street name, or null if absent")
     city: str | None = None
     state: str | None = Field(None, description="2-letter state code")
-    postcode: str | None = None
+    postcode: str | None = Field(None, description='5-digit postcode as a quoted string, leading zeros kept, e.g. "02911"')
+
+    @field_validator("line1", "city", "state", "postcode", mode="before")
+    @classmethod
+    def _numbers_to_text(cls, v, info):
+        """Models sometimes send a ZIP as a JSON number (53663, or 2911 for "02911"). Rejecting it made the repair
+        retry blank the field, so accept it and restore the leading zeros instead."""
+        if isinstance(v, bool) or not isinstance(v, int | float):
+            return v
+        v = str(int(v)) if float(v).is_integer() else str(v)
+        return v.zfill(5) if info.field_name == "postcode" and v.isdigit() and len(v) < 5 else v
 
 
 class Extraction(BaseModel):

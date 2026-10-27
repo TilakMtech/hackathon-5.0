@@ -124,3 +124,18 @@ def test_evidence_eval_flags_unrequested_causes():
 
 def test_extraction_schema_puts_evidence_first():
     assert next(iter(Extraction.model_json_schema()["properties"])) == "evidence"
+
+
+def test_numeric_postcode_is_accepted_and_keeps_leading_zero():
+    from app.agents.schemas import Address
+    assert Address(postcode=53663).postcode == "53663"
+    assert Address(postcode=1722, state="MA").postcode == "01722"
+    assert Address(postcode="02911").postcode == "02911"
+
+
+def test_grounding_reads_ranges_as_two_figures():
+    from app.agents.schemas import EvidenceAnswer
+    trace = [{"output": {"rows": [["A", 0.247], ["B", 0.248], ["D", 0.395]]}}]
+    ok = EvidenceAnswer(answer="Carrier D is worst at 39.5%; A and B sit around 24.7-24.8%.")
+    g = evidence.grounding(ok, trace)
+    assert g["grounded"] and g["numbers_in_answer"] == 3

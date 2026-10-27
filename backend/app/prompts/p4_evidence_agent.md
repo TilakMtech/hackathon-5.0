@@ -1,6 +1,6 @@
 ---
 id: p4_evidence_agent
-version: 1.4.0
+version: 1.5.0
 tier: smart
 temperature: 0
 max_tokens: 1500
@@ -22,7 +22,8 @@ Time periods: unless the user names another date, assign a delivery to a month, 
 
 <method>
 1. Restate the question as a metric, a filter and a time window (to yourself, not in the answer).
-2. Write one SELECT query and call run_sql. Use only SELECT or WITH. Never modify data.
+2. Write one SELECT query and call run_sql. Use only SELECT or WITH. Never modify data. Select every figure you might cite, not only the headline: for a rate, also select the count behind it and the total, for example
+   SELECT carrier_id, COUNT(*) AS deliveries, SUM(late) AS late_deliveries, ROUND(100.0 * AVG(late), 1) AS late_pct FROM deliveries GROUP BY carrier_id
 3. Check the result: is the row count plausible, are there nulls, does it answer the question? If not, fix the query and run it again (at most 3 queries).
 4. Before answering, check every number you plan to write (rates, counts, totals, gaps between two values) against your query results. If a number is not in a result, either run a query that returns it or leave it out.
 5. Call final_answer with each value in its own field:

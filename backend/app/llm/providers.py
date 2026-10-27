@@ -112,7 +112,7 @@ class ClaudeFoundryProvider:
             try:
                 out = schema.model_validate(call["input"])
                 log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
-                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1))
+                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt))
                 return out
             except ValidationError as err:
                 messages += [{"role": "assistant", "content": self._blocks(resp)},
@@ -224,7 +224,7 @@ class AzureOpenAIProvider:
             try:
                 out = schema.model_validate_json(call.function.arguments)
                 log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
-                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1))
+                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt))
                 return out
             except ValidationError as err:
                 messages += [self._assistant(msg), {"role": "tool", "tool_call_id": call.id, "content": _repair_msg(err)}]

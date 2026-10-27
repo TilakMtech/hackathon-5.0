@@ -78,7 +78,7 @@ NON_FIGURES = re.compile(
     rf"|\b{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b(?:,?\s+\d{{4}})?"         # dates: "April 1", "Sep 30, 2026"
     rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?=\W|$)", re.I)             # dates: "1 April"
 SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
-FIGURE = re.compile(r"(?<![\w-])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
+FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
 
 
 def _figures(text: str) -> list[tuple[float, float]]:

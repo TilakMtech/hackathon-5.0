@@ -237,7 +237,13 @@ def run(provider: str | None = None, limit: int = 300, n_alerts: int = 20, judge
             continue
         passed = val >= thr if op == ">=" else val <= thr
         gates.append({"gate": name, "value": round(val, 4), "op": op, "threshold": thr, "passed": passed, "why": why})
-    calls = recent_calls(500)
+    calls = [c for c in recent_calls(5000) if c["ts"] >= t0]  # only this run's calls
+    retries: dict[str, dict] = {}
+    for c in calls:
+        r = retries.setdefault(c["prompt_ref"].split("@")[0], {"calls": 0, "retried": 0, "failed": 0})
+        r["calls"] += 1
+        r["retried"] += c.get("retries", 0) > 0
+        r["failed"] += not c["ok"]
     report = {
         "run_at": datetime.now(UTC).isoformat(timespec="seconds"),
         "provider": p.name, "only": only, "models": {"fast": p.model_for("fast"), "smart": p.model_for("smart")},
@@ -246,6 +252,7 @@ def run(provider: str | None = None, limit: int = 300, n_alerts: int = 20, judge
         "duration_s": round(time.time() - t0, 1),
         "tokens": {"input": sum(c["input_tokens"] for c in calls), "output": sum(c["output_tokens"] for c in calls),
                    "cache_read": sum(c["cache_read_tokens"] for c in calls)},
+        "calls_by_prompt": retries,  # retried = needed a schema repair; a rising count is an early warning
         "metrics": metrics, "gates": gates,
         "all_gates_passed": all(g["passed"] is not False for g in gates),
         "failures": {"intake": intake_f[:25], "alerts": alerts_f[:10], "evidence": ev_f[:10]},
@@ -272,6 +279,10 @@ def to_markdown(r: dict) -> str:
         res = "n/a" if g["passed"] is None else ("PASS" if g["passed"] else "FAIL")
         lines.append(f"| {g['gate']} | {g['value']} | {g['op']} {g['threshold']} | {res} |")
     lines += ["", f"Prompts: {', '.join(r['prompts'])}"]
+    if r.get("calls_by_prompt"):
+        lines += ["", "Calls (retried = needed a schema repair): "
+                  + "; ".join(f"{k} {v['calls']} calls, {v['retried']} retried, {v['failed']} failed"
+                              for k, v in sorted(r["calls_by_prompt"].items()))]
     f = r.get("failures", {})
     if any(f.values()):
         lines += ["", "## Failures (full detail in reports/evals/latest.json)", ""]

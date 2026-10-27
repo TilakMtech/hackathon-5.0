@@ -47,11 +47,12 @@ class CallRecord:
     cache_read_tokens: int = 0
     steps: int = 1
     ok: bool = True
+    retries: int = 0
     error: str | None = None
     ts: float = field(default_factory=time.time)
 
 
-_CALLS: deque[CallRecord] = deque(maxlen=500)
+_CALLS: deque[CallRecord] = deque(maxlen=5000)
 
 
 def log_call(rec: CallRecord) -> None:
