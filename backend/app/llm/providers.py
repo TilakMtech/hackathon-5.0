@@ -35,6 +35,11 @@ FINAL_TOOL = "final_answer"
 OUTPUT_TOOL = "record_output"
 
 
+def _reasons(err: ValidationError) -> list[str]:
+    """Short labels like "extra_forbidden delivery_address.zip" for the eval report."""
+    return [f"{e['type']} {'.'.join(str(x) for x in e['loc'])}" for e in err.errors()][:5]
+
+
 def _repair_msg(err: ValidationError) -> str:
     return ("Your last tool call did not match the schema: "
             f"{err.errors(include_url=False)[:5]}. Call the tool again with corrected arguments only.")
@@ -99,6 +104,7 @@ class ClaudeFoundryProvider:
                 "input_schema": inline_schema(schema)}
         messages: list[dict] = [{"role": "user", "content": user}]
         t0, tin, tout, tcache = time.time(), 0, 0, 0
+        reasons: list[str] = []
         for attempt in range(3):
             resp = self._create(prompt, messages=messages, tools=[tool],
                                 tool_choice={"type": "tool", "name": OUTPUT_TOOL})
@@ -112,9 +118,11 @@ class ClaudeFoundryProvider:
             try:
                 out = schema.model_validate(call["input"])
                 log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
-                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt))
+                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt,
+                                    repair_reasons=reasons))
                 return out
             except ValidationError as err:
+                reasons += _reasons(err)
                 messages += [{"role": "assistant", "content": self._blocks(resp)},
                              {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call["id"],
                                                            "content": _repair_msg(err), "is_error": True}]}]
@@ -212,6 +220,7 @@ class AzureOpenAIProvider:
                                                  "parameters": inline_schema(schema)}}
         messages: list[dict] = [{"role": "user", "content": user}]
         t0, tin, tout, tcache = time.time(), 0, 0, 0
+        reasons: list[str] = []
         for attempt in range(2):
             resp = self._create(prompt, messages, tools=[tool],
                                 tool_choice={"type": "function", "function": {"name": OUTPUT_TOOL}})
@@ -224,9 +233,11 @@ class AzureOpenAIProvider:
             try:
                 out = schema.model_validate_json(call.function.arguments)
                 log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
-                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt))
+                                    int((time.time() - t0) * 1000), tin, tout, tcache, attempt + 1, retries=attempt,
+                                    repair_reasons=reasons))
                 return out
             except ValidationError as err:
+                reasons += _reasons(err)
                 messages += [self._assistant(msg), {"role": "tool", "tool_call_id": call.id, "content": _repair_msg(err)}]
         log_call(CallRecord(prompt.ref, self.name, self.model_for(prompt.tier),
                             int((time.time() - t0) * 1000), tin, tout, tcache, 2, ok=False, error="schema"))

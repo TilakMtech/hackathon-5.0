@@ -48,6 +48,7 @@ class CallRecord:
     steps: int = 1
     ok: bool = True
     retries: int = 0
+    repair_reasons: list[str] = field(default_factory=list)
     error: str | None = None
     ts: float = field(default_factory=time.time)
 

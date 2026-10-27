@@ -139,3 +139,12 @@ def test_grounding_reads_ranges_as_two_figures():
     ok = EvidenceAnswer(answer="Carrier D is worst at 39.5%; A and B sit around 24.7-24.8%.")
     g = evidence.grounding(ok, trace)
     assert g["grounded"] and g["numbers_in_answer"] == 3
+
+
+def test_address_rejects_unknown_keys_so_a_misnamed_postcode_is_repaired_not_dropped():
+    from pydantic import ValidationError
+
+    from app.agents.schemas import Address
+    with pytest.raises(ValidationError):
+        Address.model_validate({"line1": "1 Main St", "zip": "43214"})
+    assert inline_schema(Extraction)["properties"]["delivery_address"]["additionalProperties"] is False

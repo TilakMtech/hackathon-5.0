@@ -4,7 +4,7 @@ from __future__ import annotations
 import re
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 # Models sometimes leak tool-call markup ("</answer>", "<parameter name=...>") into string fields.
 # Rejecting it makes the provider send an automatic repair request instead of showing garbage to users.
@@ -25,6 +25,10 @@ class OrderLine(BaseModel):
 
 
 class Address(BaseModel):
+    # unknown keys are an error, not silently dropped: a postcode sent as "zip" or "postal_code" used to vanish
+    # without a trace; now it triggers the repair retry and shows up in the retry count
+    model_config = ConfigDict(extra="forbid")
+
     line1: str | None = Field(None, description="Street number and street name, or null if absent")
     city: str | None = None
     state: str | None = Field(None, description="2-letter state code")

@@ -240,7 +240,9 @@ def run(provider: str | None = None, limit: int = 300, n_alerts: int = 20, judge
     calls = [c for c in recent_calls(5000) if c["ts"] >= t0]  # only this run's calls
     retries: dict[str, dict] = {}
     for c in calls:
-        r = retries.setdefault(c["prompt_ref"].split("@")[0], {"calls": 0, "retried": 0, "failed": 0})
+        r = retries.setdefault(c["prompt_ref"].split("@")[0], {"calls": 0, "retried": 0, "failed": 0, "reasons": {}})
+        for why in c.get("repair_reasons", []):
+            r["reasons"][why] = r["reasons"].get(why, 0) + 1
         r["calls"] += 1
         r["retried"] += c.get("retries", 0) > 0
         r["failed"] += not c["ok"]
@@ -282,6 +284,7 @@ def to_markdown(r: dict) -> str:
     if r.get("calls_by_prompt"):
         lines += ["", "Calls (retried = needed a schema repair): "
                   + "; ".join(f"{k} {v['calls']} calls, {v['retried']} retried, {v['failed']} failed"
+                              + (f" ({', '.join(f'{w} x{n}' for w, n in v['reasons'].items())})" if v.get("reasons") else "")
                               for k, v in sorted(r["calls_by_prompt"].items()))]
     f = r.get("failures", {})
     if any(f.values()):
