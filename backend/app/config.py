@@ -44,7 +44,8 @@ class Settings(BaseSettings):
     rate_limit_per_min: int = 30  # per client IP, on those endpoints
 
     # Leadership targets
-    otd_target: float = 0.85
+    otd_target: float = 0.85     # team proposal to confirm with the sponsor: reach it within 90 days of starting wave 1
+    otd_target_days: int = 90
     otd_benchmark: float = 0.94
 
 

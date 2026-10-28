@@ -84,7 +84,38 @@ def _quality_checks(d: pd.DataFrame) -> list[dict]:
     add("on_time flag disagrees with days_late", flag_mismatch, "0", flag_mismatch == 0)
     shipped_before_order = (d.shipped_ts < d.order_received_ts).sum()
     add("Shipped before order received", shipped_before_order, "0", shipped_before_order == 0)
+    # chronology: a delivery cannot happen before the carrier collects it. Flagged (dq_chronology) and kept:
+    # the raw data is not repaired; analytics.sensitivity() shows results with and without these rows
+    delivered_before_shipped = int(d.dq_chronology.sum())
+    add("Delivered before carrier collection (kept, flagged)", delivered_before_shipped, "0", delivered_before_shipped == 0)
     return checks
+
+
+def _reference_checks(d: pd.DataFrame, clients: pd.DataFrame, carriers: pd.DataFrame, warehouses: pd.DataFrame,
+                      penalties: pd.DataFrame, complaints: pd.DataFrame) -> list[dict]:
+    """Referential integrity and business-rule checks across tables."""
+    out: list[dict] = []
+
+    def add(name: str, value: int, expected: str, ok: bool, note: str = "") -> None:
+        out.append({"check": name, "value": int(value), "expected": expected, "ok": bool(ok), **({"note": note} if note else {})})
+
+    for col, ref, key in [("client_id", clients, "client_id"), ("carrier_id", carriers, "carrier_id"),
+                          ("fulfilment_warehouse_id", warehouses, "warehouse_id"), ("nearest_warehouse_id", warehouses, "warehouse_id")]:
+        n = int((~d[col].isin(ref[key])).sum())
+        add(f"Deliveries with unknown {col}", n, "0", n == 0)
+    for name, t in [("SLA penalties", penalties), ("complaints", complaints)]:
+        ids = t.delivery_id.dropna()
+        n = int((~ids.isin(d.delivery_id)).sum())
+        add(f"{name} pointing at an unknown delivery", n, "0", n == 0)
+    # promised-date convention per commitment type: documented because it changes how "same-day" reads
+    gap = (pd.to_datetime(d.promised_date) - d.order_received_ts.dt.normalize()).dt.days
+    for ct, expected in [("same_day", 1), ("next_day", 2), ("standard", 4)]:
+        g = gap[d.commitment_type == ct]
+        n_other = int((g != expected).sum())
+        add(f"{ct}: promised date is {expected} day(s) after receipt", n_other, "0 exceptions", n_other == 0,
+            note="same_day is promised the day after receipt in every row: confirm with the sponsor what 'same-day' means"
+            if ct == "same_day" else "")
+    return out
 
 
 def enrich(d: pd.DataFrame, warehouses: pd.DataFrame) -> pd.DataFrame:
@@ -105,6 +136,7 @@ def enrich(d: pd.DataFrame, warehouses: pd.DataFrame) -> pd.DataFrame:
     d["clean_upstream"] = ((d.drv_address + d.drv_stock + d.drv_cutoff) == 0).astype(int)
     d["lane"] = d.carrier_id + "|" + d.destination_region
     d["route_ratio"] = d.actual_route_km / d.planned_route_km
+    d["dq_chronology"] = (pd.to_datetime(d.delivered_date) < d.shipped_ts.dt.normalize()).astype(int)
     return d
 
 
@@ -143,14 +175,17 @@ def load_dataset(data_dir: str | None = None) -> Dataset:
     d = enrich(raw, warehouses)
     quality = _quality_checks(d)
     d = flag_bad_lanes(d)
+    clients, carriers = _read(path, "clients"), _read(path, "carriers")
+    penalties, complaints = _read(path, "sla_penalties"), _read(path, "complaints")
+    quality += _reference_checks(d, clients, carriers, warehouses, penalties, complaints)
     return Dataset(
         deliveries=d,
-        clients=_read(path, "clients"),
-        carriers=_read(path, "carriers"),
+        clients=clients,
+        carriers=carriers,
         warehouses=warehouses,
         distances=pd.read_csv(path / "warehouse_region_distance_miles.csv"),
-        penalties=_read(path, "sla_penalties"),
-        complaints=_read(path, "complaints"),
+        penalties=penalties,
+        complaints=complaints,
         cs_time=_read(path, "customer_success_time_study"),
         quality=quality,
     )

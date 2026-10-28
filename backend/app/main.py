@@ -23,6 +23,7 @@ async def lifespan(_: FastAPI):
     analytics.fit_model()
     analytics.drivers()
     analytics.bridge()
+    analytics.holdout()
     yield
 
 
@@ -94,6 +95,16 @@ class SimulateRequest(BaseModel):
         description="Share of affected orders fixed per driver (0-1), keys: " + ", ".join(analytics.DRIVER_KEYS),
     )
     route_cut: float = Field(0.0, ge=0, le=0.5, description="Fractional cut in stops and route km")
+
+
+@app.get("/api/model-checks")
+def model_checks() -> dict:
+    return analytics.model_checks()
+
+
+@app.get("/api/eligibility")
+def eligibility() -> dict:
+    return analytics.eligibility()
 
 
 @app.post("/api/simulate")

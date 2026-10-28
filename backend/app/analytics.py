@@ -173,6 +173,7 @@ def drivers(ds: Dataset | None = None) -> dict:
             "late_rate_with": _r(with_.late.mean()),
             "late_rate_without": _r(without.late.mean()),
             "odds_ratio": _r(np.exp(m.params[k]), 2),
+            "odds_ratio_ci95": [_r(np.exp(m.conf_int().loc[k, 0]), 2), _r(np.exp(m.conf_int().loc[k, 1]), 2)],
             "p_value": _r(m.pvalues[k], 6),
             "otd_if_fixed": _r(1 - _predict_mean(d, zero=(k,))),
             "penalties_usd": int(pen.loc[pen[k] == 1, "penalty_usd"].sum()),
@@ -181,6 +182,8 @@ def drivers(ds: Dataset | None = None) -> dict:
         "key": "routing", "label": "Route length and stops (what the vendor optimises)",
         "step": "9. Delivery", "fix": "Routing optimisation engine",
         "odds_ratio_per_stop": _r(np.exp(m.params["stops_on_route"]), 3),
+        "odds_ratio_per_stop_ci95": [_r(np.exp(m.conf_int().loc["stops_on_route", 0]), 3),
+                                     _r(np.exp(m.conf_int().loc["stops_on_route", 1]), 3)],
         "p_value_stops": _r(m.pvalues["stops_on_route"], 4),
         "odds_ratio_per_km": _r(np.exp(m.params["planned_route_km"]), 4),
         "p_value_km": _r(m.pvalues["planned_route_km"], 4),
@@ -194,24 +197,89 @@ def drivers(ds: Dataset | None = None) -> dict:
             "pseudo_r2": _r(m.prsquared), "n": int(m.nobs)}
 
 
-def simulate(fixes: dict[str, float], route_cut: float = 0.0) -> dict:
-    """Expected OTD if each driver is removed for a share `fixes[k]` of affected orders.
+@lru_cache(maxsize=1)
+def sensitivity() -> dict:
+    """Are the findings robust to the 450 deliveries dated before carrier collection? Refit without them."""
+    d = load_dataset().deliveries
+    out = {}
+    for name, x in [("all_rows", d), ("without_chronology_exceptions", d[d.dq_chronology == 0])]:
+        m = smf.logit(FORMULA, x).fit(disp=0)
+        ci = m.conf_int()
+        out[name] = {
+            "rows": int(len(x)), "otd": _r(1 - x.late.mean()),
+            "odds_ratios": {k: {"or": _r(np.exp(m.params[k]), 2), "ci95": [_r(np.exp(ci.loc[k, 0]), 2), _r(np.exp(ci.loc[k, 1]), 2)]}
+                            for k in [*DRIVER_KEYS, "stops_on_route", "planned_route_km"]},
+            "otd_all_flags_removed": _r(1 - m.predict(x.assign(**dict.fromkeys(DRIVER_KEYS, 0))).mean()),
+        }
+    return {**out, "note": "The 450 exception rows are all marked on time. Excluding them lowers OTD and raises the "
+                           "cutoff odds ratio; the routing finding (odds ratios near 1) does not change."}
 
-    Exact expectation: the fix pattern M (which drivers are removed) has probability
-    prod f_i (i in M) * prod (1 - f_i) (i not in M), independent of the row, so
-    E[OTD] = 1 - sum_M P(M) * mean(predict with M zeroed).
+
+def model_checks() -> dict:
+    """What the model can and cannot claim: out-of-time prediction, calibration, sensitivity."""
+    return {"holdout": holdout()["summary"], "sensitivity": sensitivity(),
+            "limits": [
+                "Odds ratios are associations from observational data, not proven causal effects.",
+                "The 'if fixed' figures set flags to zero in the model: scenario estimates, not demonstrated performance.",
+                "Routing coefficients near 1 mean no measurable association with stops or route km in this data; they do "
+                "not prove a routing engine (which may also change carrier choice) would add nothing.",
+                "Intervention effects need a controlled pilot: see the decision memo.",
+            ]}
+
+
+# ---------- scenarios: each fix only reaches the orders it can reach ----------
+SECOND_WAVE_HOUR = 12  # a second pick wave at noon cannot catch same-day orders received after it
+LEVERS = {
+    "drv_address": "Email intake agent: incomplete addresses on EMAIL orders",
+    "drv_address_feed": "Address validation on EDI/API feeds (not built in this slice)",
+    "drv_lane": "Lane rules: bad-lane volume moved to a reliable carrier",
+    "drv_cutoff": f"Second pick wave at {SECOND_WAVE_HOUR}:00: same-day orders received before it",
+    "drv_stock": "Re-slotting: stock misses at the nearest warehouse",
+}
+
+
+def _eligibility(d: pd.DataFrame) -> pd.DataFrame:
+    return pd.DataFrame({"email": d.order_channel == "Email",
+                         "before_wave": d.order_received_ts.dt.hour < SECOND_WAVE_HOUR}, index=d.index)
+
+
+@lru_cache(maxsize=1024)
+def _group_mean(email: bool, before_wave: bool, zero: tuple[str, ...], route_cut: float) -> tuple[float, int]:
+    d = load_dataset().deliveries
+    el = _eligibility(d)
+    x = d[(el.email == email) & (el.before_wave == before_wave)].copy()
+    for k in zero:
+        x[k] = 0
+    if route_cut:
+        x["stops_on_route"] = x.stops_on_route * (1 - route_cut)
+        x["planned_route_km"] = x.planned_route_km * (1 - route_cut)
+    return (float(fit_model().predict(x).mean()) if len(x) else 0.0), int(len(x))
+
+
+def simulate(fixes: dict[str, float], route_cut: float = 0.0) -> dict:
+    """Expected OTD (model scenario, not a forecast) when each lever fixes a share of the orders it can REACH.
+
+    Rows are split by what each fix can reach (email or not; received before or after the second wave). Within a
+    group every driver has one removal probability, so the exact expectation is the sum over the 16 removal
+    patterns M of P(M) x mean(prediction with M zeroed), weighted by group size.
     """
     d = load_dataset().deliveries
-    f = {k: min(max(float(fixes.get(k, 0.0)), 0.0), 1.0) for k in DRIVER_KEYS}
-    expected_late = 0.0
-    for mask in product([0, 1], repeat=len(DRIVER_KEYS)):
-        p = 1.0
-        for k, on in zip(DRIVER_KEYS, mask, strict=True):
-            p *= f[k] if on else 1 - f[k]
-        if p == 0:
-            continue
-        zero = tuple(k for k, on in zip(DRIVER_KEYS, mask, strict=True) if on)
-        expected_late += p * _predict_mean(d, zero=zero, route_cut=route_cut)
+    f = {k: min(max(float(fixes.get(k, 0.0)), 0.0), 1.0) for k in LEVERS}
+    route_cut = round(float(route_cut), 4)
+    expected_late, total = 0.0, len(d)
+    for email in (True, False):
+        for before in (True, False):
+            g = {"drv_address": f["drv_address"] if email else f["drv_address_feed"],
+                 "drv_lane": f["drv_lane"], "drv_cutoff": f["drv_cutoff"] if before else 0.0, "drv_stock": f["drv_stock"]}
+            for mask in product([0, 1], repeat=len(DRIVER_KEYS)):
+                pm = 1.0
+                for k, on in zip(DRIVER_KEYS, mask, strict=True):
+                    pm *= g[k] if on else 1 - g[k]
+                if pm == 0:
+                    continue
+                zero = tuple(sorted(k for k, on in zip(DRIVER_KEYS, mask, strict=True) if on))
+                mean, n = _group_mean(email, before, zero, route_cut)
+                expected_late += pm * mean * n / total
     otd = 1 - expected_late
     today = 1 - _predict_mean(d)
     months = d.month.nunique()
@@ -221,21 +289,45 @@ def simulate(fixes: dict[str, float], route_cut: float = 0.0) -> dict:
         "otd_expected": _r(otd),
         "meets_target": bool(otd >= settings.otd_target),
         "late_deliveries_avoided_per_month": int(round((otd - today) * len(d) / months)),
+        "kind": "model scenario: assumes each fix removes the flag's association for the orders it reaches; "
+                "not a forecast until a pilot measures the real effect",
+    }
+
+
+def eligibility() -> dict:
+    """How much of each driver the proposed fixes can reach at all."""
+    d = load_dataset().deliveries
+    el = _eligibility(d)
+    addr, cut = d.drv_address == 1, d.drv_cutoff == 1
+    return {
+        "drv_address": {"affected": int(addr.sum()), "reachable_by_email_agent": int((addr & el.email).sum()),
+                        "needs_feed_validation": int((addr & ~el.email).sum())},
+        "drv_cutoff": {"affected": int(cut.sum()), f"received_before_{SECOND_WAVE_HOUR}": int((cut & el.before_wave).sum()),
+                       f"received_at_or_after_{SECOND_WAVE_HOUR}": int((cut & ~el.before_wave).sum())},
+        "levers": LEVERS,
     }
 
 
 def bridge() -> dict:
+    """Each proposed fix alone, at full coverage of the orders it can reach."""
     d = load_dataset().deliveries
     today = 1 - _predict_mean(d)
+    full = {"drv_address": 1, "drv_address_feed": 0, "drv_lane": 1, "drv_cutoff": 1, "drv_stock": 1}
+
+    def only(k: str) -> float:
+        return simulate({j: (full[j] if j == k else 0) for j in LEVERS})["otd_expected"]
+
     steps = [{"step": "routing", "label": "Routing 20% shorter",
-              "delta": _r((1 - _predict_mean(d, route_cut=0.2)) - today)}]
-    for drv in sorted(DRIVERS, key=lambda x: _predict_mean(d, zero=(x["key"],))):
-        steps.append({"step": drv["key"], "label": drv["fix"],
-                      "delta": _r((1 - _predict_mean(d, zero=(drv["key"],))) - today)})
-    all_fixed = 1 - _predict_mean(d, zero=tuple(DRIVER_KEYS))
+              "delta": _r(simulate({}, route_cut=0.2)["otd_expected"] - today)}]
+    for k in sorted([k for k in LEVERS if full[k]], key=lambda k: -only(k)):
+        steps.append({"step": k, "label": next(x["fix"] for x in DRIVERS if x["key"] == k), "delta": _r(only(k) - today)})
+    all_fixed = simulate(full)["otd_expected"]
     overlap = all_fixed - today - sum(s["delta"] for s in steps)
     steps.append({"step": "overlap", "label": "Overlap between fixes", "delta": _r(overlap)})
     return {"today": _r(today), "all_fixed": _r(all_fixed), "steps": steps,
+            "scope": "each fix at 100% of the orders it can reach (email-only address fix; second wave at "
+                     f"{SECOND_WAVE_HOUR}:00); model scenario, not a forecast",
+            "all_flags_removed": _r(1 - _predict_mean(d, zero=tuple(DRIVER_KEYS))),
             "target": settings.otd_target, "benchmark": settings.otd_benchmark}
 
 

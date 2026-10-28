@@ -6,7 +6,7 @@ Rule of the system: **Claude handles language, code handles numbers and decision
 | --- | --- | --- | --- | --- |
 | Email intake | `p1_email_extraction` | fast (Haiku) | email in any of the 14 layouts → order JSON with an evidence quote per field | quotes must exist verbatim in the email; address values must appear in the email (blocks the address on file); ZIP vs state check; quantity sanity; injection detector; decision = auto-accept / ask the client / human review |
 | Address request | `p2_address_request` | fast | missing fields → 60-word email to the client | no ZIP code that the client did not send; every missing field named |
-| Delay alert | `p3_delay_alert` | smart (Sonnet) | delivery facts + root cause → client message | dates must be in the facts; no penalty or liability words; 80 words max; order ref in subject |
+| Delay alert | `p3_delay_alert` | smart (Sonnet) | facts known at despatch (historical replay) → client message | dates, actions, carriers and warehouses must be in the facts; no penalty or liability words; 80 words max; order ref in subject; status is 'ready for approval', never 'safe to send' |
 | Alert judge | `p5_alert_judge` | smart | message + facts → 1–5 scores on factual, clarity, action, tone | runs in the eval suite; a factual score below 5 fails |
 | Evidence Q&A | `p4_evidence_agent` | smart | leadership question → read-only SQL tool loop → answer + SQL + figures | SELECT only, a single statement, no file or network functions, row limit; every number in the answer is traced to a query result; questions the data cannot answer are declined |
 

@@ -14,25 +14,25 @@ export type Overview = {
   revenue_at_risk_usd: number
   threatening_accounts: number
   cs_hours_week: Record<string, number>
-  data_quality: { check: string; value: number; expected: string; ok: boolean }[]
+  data_quality: { check: string; value: number; expected: string; ok: boolean; note?: string }[]
 }
 export type DriverRow = {
   key: string; label: string; step: string; fix: string; share: number; deliveries: number
-  late_rate_with: number; late_rate_without: number; odds_ratio: number; p_value: number
+  late_rate_with: number; late_rate_without: number; odds_ratio: number; odds_ratio_ci95: [number, number]; p_value: number
   otd_if_fixed: number; penalties_usd: number
 }
 export type Drivers = {
   otd_today_model: number
   drivers: DriverRow[]
   routing: {
-    odds_ratio_per_stop: number; p_value_stops: number; p_value_km: number
+    odds_ratio_per_stop: number; odds_ratio_per_stop_ci95: [number, number]; p_value_stops: number; p_value_km: number
     otd_if_routes_20pct_shorter: number; late_rate_by_stops: { band: string; late_rate: number }[]
   }
   pseudo_r2: number
   n: number
 }
 export type Bridge = {
-  today: number; all_fixed: number; target: number; benchmark: number
+  today: number; all_fixed: number; all_flags_removed: number; scope: string; target: number; benchmark: number
   steps: { step: string; label: string; delta: number }[]
 }
 export type Lane = { carrier: string; region: string; deliveries: number; late_rate: number; late_rate_clean: number; avg_rate_usd: number; bad: boolean }
@@ -87,3 +87,16 @@ export const pct = (x: number, d = 1) => `${(x * 100).toFixed(d)}%`
 export const usd = (x: number) =>
   x >= 1e6 ? `$${(x / 1e6).toFixed(1)}M` : x >= 1e3 ? `$${Math.round(x / 1e3)}K` : `$${Math.round(x)}`
 export const num = (x: number) => x.toLocaleString('en-US')
+
+type OrCi = { or: number; ci95: [number, number] }
+type SensRun = { rows: number; otd: number; odds_ratios: Record<string, OrCi>; otd_all_flags_removed: number }
+export type ModelChecks = {
+  holdout: { split: string; train_rows: number; test_rows: number; auc: number; otd_predicted: number; otd_observed: number
+    bad_lanes_train: string[]; same_lanes_as_full_data: boolean; calibration: { decile: number; predicted_late: number; observed_late: number; n: number }[] }
+  sensitivity: { all_rows: SensRun; without_chronology_exceptions: SensRun; note: string }
+  limits: string[]
+}
+export type Eligibility = {
+  drv_address: { affected: number; reachable_by_email_agent: number; needs_feed_validation: number }
+  drv_cutoff: Record<string, number>
+}

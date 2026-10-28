@@ -12,13 +12,13 @@ The LLM is a setting (`OTD_LLM_PROVIDER` = `mock` | `claude_foundry` | `azure_op
 | Tab | Finding |
 | --- | --- |
 | Overview | OTD is 71.0% and flat. Orders with none of the four upstream problems are already 92.2% on time. |
-| Root causes | Four drivers (address, same-day cutoff, stock, carrier lane) explain 85% of late deliveries. Routing has no effect (odds ratio 1.00 per stop, p = 0.76). |
+| Root causes | 85% of late deliveries have at least one of four upstream flags (address, same-day cutoff, stock, carrier lane), each with a large odds ratio. Stops and route km show no measurable association (odds ratio 1.00 per stop). Associations in historical data, checked out-of-time (AUC 0.81 on Aug–Sep) and without 450 suspect rows; causal effects need a pilot. |
 | Carrier lanes | D, E and F each fail on specific regions (43–46% late on clean orders, against about 5%). The output is a despatch rules table. |
 | Stock placement | 12% of orders ship from a far warehouse (875 vs 125 miles median) because the nearest one had no stock. |
 | Accounts at risk | The 9 accounts ($14.2M) threatening to leave, with each one's biggest driver. |
 | What-if | Sliders for each fix and for the vendor's routing cut, giving the expected OTD. |
 | Email intake | P1 extracts the order with evidence quotes; guardrails decide auto-accept, ask the client, or human review; P2 drafts the address request. |
-| Delay alerts | P3 writes a proactive alert from the delivery's root cause; code checks it and P5 judges it. |
+| Delay alerts | Historical replay on Aug–Sep: an alert fires when risk at despatch (model trained on Apr–Jul) crosses 50%. P3 writes it without seeing the outcome; code blocks invented dates, actions and names; P5 judges it; a person approves the proposed action before sending. |
 | Ask the data | P4 answers leadership questions with read-only SQL; every number is traced to a query result. |
 | Prompt quality | Eval report: 300 golden emails, 20 injections, 17 questions, and pass/fail release gates. |
 
@@ -27,7 +27,7 @@ The LLM is a setting (`OTD_LLM_PROVIDER` = `mock` | `claude_foundry` | `azure_op
 - **Numbers come from code, never from an LLM.** `backend/app/analytics.py` holds pandas plus a logistic regression (statsmodels) that controls for commitment type, channel, stops and route km.
 - **Rules are learned from data.** A bad lane is one whose late rate on clean orders is at least 2× the network rate. Thresholds are set through `OTD_*` environment variables.
 - **Data is checked before it is trusted.** The checks are shown on the Overview tab.
-- **Tests pin the claims.** `backend/tests` asserts the sponsor's numbers (48,340 deliveries, 71% OTD, $14.2M, 34 complaints) and that routing has no effect.
+- **Tests pin the claims.** `backend/tests` asserts the sponsor's numbers (48,340 deliveries, 71% OTD, $14.2M, 34 complaints) and that stops and route km show no measurable association with lateness.
 
 ## Layout
 

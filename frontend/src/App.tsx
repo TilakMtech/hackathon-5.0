@@ -3,7 +3,7 @@ import {
   Bar, BarChart, CartesianGrid, Cell, LabelList, Line, LineChart, ReferenceLine,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts'
-import type { Accounts, Bridge, Drivers, Lanes, Overview, SimResult, Stock } from './api'
+import type { Accounts, Bridge, Drivers, Eligibility, Lanes, ModelChecks, Overview, SimResult, Stock } from './api'
 import { get, num, pct, post, usd } from './api'
 import type { LlmStatus } from './agents'
 import { AlertsPage, AskPage, IntakePage, ProviderBadge, QualityPage } from './agents'
@@ -63,7 +63,7 @@ function OverviewPage() {
       <div className="tiles">
         <Tile label="On-time delivery" value={pct(o.otd)} note={`target ${pct(o.otd_target, 0)} · benchmark ${pct(o.otd_benchmark, 0)}`} tone="bad" />
         <Tile label="OTD on clean orders" value={pct(o.otd_clean_orders)} note={`${num(o.clean_orders)} orders with no upstream problem`} tone="good" />
-        <Tile label="Late deliveries with a known driver" value={pct(o.late_with_driver_share, 0)} note="address, stock, cutoff or lane" />
+        <Tile label="Late deliveries with a flagged driver" value={pct(o.late_with_driver_share, 0)} note="address, stock, cutoff or lane flagged: an association, not proof of cause" />
         <Tile label="SLA penalties + redelivery" value={usd(o.cost.sla_penalties_usd + o.cost.redelivery_usd)} note={`${o.period.from} to ${o.period.to}`} />
         <Tile label="Revenue threatening to leave" value={usd(o.revenue_at_risk_usd)} note={`${o.threatening_accounts} accounts · ${o.complaints.from_threatening_accounts} of ${o.complaints.total} complaints`} tone="bad" />
       </div>
@@ -103,11 +103,12 @@ function OverviewPage() {
           <thead><tr><th>Check</th><th className="r">Value</th><th>Expected</th><th>Result</th></tr></thead>
           <tbody>
             {o.data_quality.map((c) => (
-              <tr key={c.check}><td>{c.check}</td><td className="r">{num(c.value)}</td><td>{c.expected}</td>
+              <tr key={c.check}><td>{c.check}{c.note && <div className="muted small">{c.note}</div>}</td><td className="r">{num(c.value)}</td><td>{c.expected}</td>
                 <td className={c.ok ? 'good' : 'bad'}>{c.ok ? 'pass' : 'review'}</td></tr>
             ))}
           </tbody>
         </table>
+        <div className="muted small">Rows that fail a check are flagged and kept, never repaired. The Root causes tab shows the results with and without them.</div>
       </section>
     </>
   )
@@ -126,7 +127,7 @@ function BridgeChart({ b }: { b: Bridge }) {
     rows.push({ name: SHORT[s.step] ?? s.label, base: lo, value: Math.max(Math.abs(s.delta), 0.0015), kind: s.delta < 0 ? 'down' : s.delta < 0.001 ? 'zero' : 'up', label: `${s.delta >= 0 ? '+' : '−'}${(Math.abs(s.delta) * 100).toFixed(1)}` })
     level += s.delta
   }
-  rows.push({ name: 'All four fixed', base: 0, value: b.all_fixed, kind: 'total', label: pct(b.all_fixed) })
+  rows.push({ name: 'All four, in reach', base: 0, value: b.all_fixed, kind: 'total', label: pct(b.all_fixed) })
   const color = (k: string) => (k === 'total' ? 'var(--grey)' : k === 'up' ? 'var(--good)' : k === 'down' ? 'var(--bad)' : 'var(--muted)')
   return (
     <ResponsiveContainer width="100%" height={340}>
@@ -146,6 +147,35 @@ function BridgeChart({ b }: { b: Bridge }) {
   )
 }
 
+function ModelChecksCard() {
+  const { data: m } = useApi<ModelChecks>('/api/model-checks')
+  if (!m) return null
+  const h = m.holdout, a = m.sensitivity.all_rows, x = m.sensitivity.without_chronology_exceptions
+  const keys = ['drv_address', 'drv_cutoff', 'drv_stock', 'drv_lane', 'stops_on_route']
+  const top = h.calibration.at(-1)
+  return (
+    <section className="card">
+      <h3>What the model can and cannot claim</h3>
+      <div className="grid2">
+        <div>
+          <b>Out-of-time check.</b> Lane rule and model learned on orders before {h.split} ({num(h.train_rows)}), scored on the {num(h.test_rows)} after:
+          AUC {h.auc.toFixed(2)}, predicted OTD {pct(h.otd_predicted)} vs observed {pct(h.otd_observed)}; {h.same_lanes_as_full_data ? 'the same' : 'different'} {h.bad_lanes_train.length} bad lanes.
+          {top && <> Calibration is loose at the top: the riskiest tenth was predicted {pct(top.predicted_late, 0)} late and was {pct(top.observed_late, 0)} late.</>}
+        </div>
+        <div>
+          <b>Sensitivity to 450 suspect rows</b> (delivered before collection, all marked on time):
+          <table><thead><tr><th>Odds ratio</th><th className="r">All rows</th><th className="r">Without them</th></tr></thead>
+            <tbody>
+              <tr><td>OTD</td><td className="r">{pct(a.otd)}</td><td className="r">{pct(x.otd)}</td></tr>
+              {keys.map((k) => <tr key={k}><td>{k}</td><td className="r">{a.odds_ratios[k].or}</td><td className="r">{x.odds_ratios[k].or}</td></tr>)}
+            </tbody></table>
+        </div>
+      </div>
+      <ul className="small">{m.limits.map((l) => <li key={l}>{l}</li>)}</ul>
+    </section>
+  )
+}
+
 function CausesPage() {
   const { data: d, error } = useApi<Drivers>('/api/drivers')
   const { data: b } = useApi<Bridge>('/api/bridge')
@@ -153,37 +183,39 @@ function CausesPage() {
   return (
     <>
       <p className="lead">
-        Four problems before the truck leaves explain the late deliveries. Making routes 20% shorter moves OTD from{' '}
-        {pct(d.otd_today_model)} to {pct(d.routing.otd_if_routes_20pct_shorter)}: nothing.
+        Four problems before the truck leaves are flagged on most late deliveries and carry large odds ratios. Stops and route km
+        show no measurable association (odds ratio {d.routing.odds_ratio_per_stop.toFixed(2)} per stop, 95% CI {d.routing.odds_ratio_per_stop_ci95[0].toFixed(2)}–{d.routing.odds_ratio_per_stop_ci95[1].toFixed(2)}): in the model, routes 20% shorter move OTD from{' '}
+        {pct(d.otd_today_model)} to {pct(d.routing.otd_if_routes_20pct_shorter)}. These are associations in historical data, not proven causes; a pilot tests them.
       </p>
       <section className="card">
-        <h3>Fixing the four drivers lifts OTD from {pct(b.today)} to {pct(b.all_fixed)}</h3>
+        <h3>Model scenario: the proposed fixes, at full reach, take OTD from {pct(b.today)} to {pct(b.all_fixed)}</h3>
         <BridgeChart b={b} />
-        <div className="muted small">Logistic regression on {num(d.n)} deliveries, controlling for commitment type, channel, stops and route km. Each step = that fix alone.</div>
+        <div className="muted small">Logistic regression on {num(d.n)} deliveries, controlling for commitment type, channel, stops and route km. Each step is one fix alone, applied only to the orders it can reach: the email agent fixes email orders only, and a 12:00 second wave cannot catch orders received after noon. Removing every flag everywhere would give {pct(b.all_flags_removed)}. A scenario, not a forecast.</div>
       </section>
       <section className="card">
         <h3>Driver evidence</h3>
         <table>
-          <thead><tr><th>Driver</th><th>Process step</th><th className="r">Share of orders</th><th className="r">Late: with</th><th className="r">Late: without</th><th className="r">Odds ratio</th><th className="r">OTD if fixed</th><th className="r">Penalties</th></tr></thead>
+          <thead><tr><th>Driver</th><th>Process step</th><th className="r">Share of orders</th><th className="r">Late: with</th><th className="r">Late: without</th><th className="r">Odds ratio (95% CI)</th><th className="r">Scenario: flag gone everywhere</th><th className="r">Penalties</th></tr></thead>
           <tbody>
             {d.drivers.map((r) => (
               <tr key={r.key}>
                 <td><b>{r.label}</b><div className="muted small">Fix: {r.fix}</div></td>
                 <td>{r.step}</td><td className="r">{pct(r.share)}</td>
                 <td className="r bad">{pct(r.late_rate_with)}</td><td className="r">{pct(r.late_rate_without)}</td>
-                <td className="r">{r.odds_ratio.toFixed(1)}×</td><td className="r good">{pct(r.otd_if_fixed)}</td>
+                <td className="r">{r.odds_ratio.toFixed(1)}× <span className="muted small">({r.odds_ratio_ci95[0].toFixed(1)}–{r.odds_ratio_ci95[1].toFixed(1)})</span></td><td className="r">{pct(r.otd_if_fixed)}</td>
                 <td className="r">{usd(r.penalties_usd)}</td>
               </tr>
             ))}
             <tr className="routing">
               <td><b>Route length and stops</b><div className="muted small">What the $680K vendor optimises</div></td>
               <td>9. Delivery</td><td className="r">all</td><td className="r" colSpan={2}>~29% at every stop count</td>
-              <td className="r">{d.routing.odds_ratio_per_stop.toFixed(2)}× (p {d.routing.p_value_stops.toFixed(2)})</td>
+              <td className="r">{d.routing.odds_ratio_per_stop.toFixed(2)}× per stop (p {d.routing.p_value_stops.toFixed(2)})</td>
               <td className="r">{pct(d.routing.otd_if_routes_20pct_shorter)}</td><td className="r">—</td>
             </tr>
           </tbody>
         </table>
       </section>
+      <ModelChecksCard />
     </>
   )
 }
@@ -311,10 +343,12 @@ function AccountsPage() {
   )
 }
 
+// each slider = share of the orders that lever can REACH (assumptions to test in the pilot, not measured effects)
 const SLIDERS = [
-  { key: 'drv_address', label: 'Addresses repaired at intake', def: 0.8 },
+  { key: 'drv_address', label: 'Email intake agent: incomplete EMAIL addresses fixed', def: 0.8 },
+  { key: 'drv_address_feed', label: 'EDI/API feed validation: incomplete feed addresses fixed (not built)', def: 0.8 },
   { key: 'drv_lane', label: 'Bad-lane volume reassigned', def: 1 },
-  { key: 'drv_cutoff', label: 'Late same-day orders caught by a 12:00 wave', def: 0.7 },
+  { key: 'drv_cutoff', label: 'Same-day orders before 12:00 caught by a second wave', def: 0.7 },
   { key: 'drv_stock', label: 'Stock misses removed by re-placement', def: 0.6 },
 ]
 
@@ -323,6 +357,7 @@ function WhatIfPage() {
   const [routeCut, setRouteCut] = useState(0)
   const [res, setRes] = useState<SimResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const { data: el } = useApi<Eligibility>('/api/eligibility')
   useEffect(() => {
     const t = setTimeout(() => {
       post<SimResult>('/api/simulate', { fixes, route_cut: routeCut }).then(setRes).catch((e: Error) => setError(e.message))
@@ -331,7 +366,8 @@ function WhatIfPage() {
   }, [fixes, routeCut])
   return (
     <>
-      <p className="lead">Move the sliders to test any plan, including the vendor's. Every number is the model's expected OTD on the six months of history.</p>
+      <p className="lead">Move the sliders to test any plan, including the vendor's. Each slider is the share of the orders that fix can reach, and the defaults are assumptions to test in a pilot. The result is a model scenario on six months of history, not a forecast.</p>
+      {el && <div className="muted small pad">Reach: of {num(el.drv_address.affected)} incomplete-address orders, {num(el.drv_address.reachable_by_email_agent)} are email (agent) and {num(el.drv_address.needs_feed_validation)} come by EDI/API. Of {num(el.drv_cutoff.affected)} same-day orders after the 8am cutoff, {num(el.drv_cutoff.received_before_12)} arrive before 12:00 and {num(el.drv_cutoff.received_at_or_after_12)} after.</div>}
       <div className="grid2">
         <section className="card">
           <h3>Plan</h3>
@@ -349,9 +385,9 @@ function WhatIfPage() {
         <section className="card center">
           {res ? (
             <>
-              <div className="muted">Expected on-time delivery</div>
+              <div className="muted">Model scenario: on-time delivery</div>
               <div className={`big ${res.meets_target ? 'good' : 'bad'}`}>{pct(res.otd_expected)}</div>
-              <div>from {pct(res.otd_today)} today · target 85%</div>
+              <div>from {pct(res.otd_today)} today · proposed target 85% within 90 days</div>
               <div className="muted pad">{num(res.late_deliveries_avoided_per_month)} fewer late deliveries a month</div>
             </>
           ) : <Loading error={error} />}
