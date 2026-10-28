@@ -21,26 +21,27 @@ from ..llm.prompts import load_prompt
 from ..llm.providers import get_provider
 from .schemas import Alert, JudgeScore
 
-CAUSE_TEXT = {
-    "drv_address": "the delivery address on the order was incomplete",
-    "drv_stock": "the item was not in stock at the warehouse nearest to you",
+CAUSE_TEXT = {  # short on purpose: three causes plus the action must fit in 80 words
+    "drv_address": "the delivery address was incomplete",
+    "drv_stock": "the item was out of stock at your nearest warehouse",
     "drv_cutoff": "the order arrived after the 8am pick list",
-    "drv_lane": "the assigned carrier is running behind on deliveries to your region",
+    "drv_lane": "the carrier on your route is running late",
 }
 BANNED = re.compile(r"penalt|compensat|refund|liabil|our fault|\bSLA\b|\bOTD\b|drv_", re.I)
 DATE = re.compile(r"\b\d{4}-\d{2}-\d{2}\b")
 # claims of something Halcyon did or will do; each must be backed by the action or causes in the facts
-ACTION_CLAIM = re.compile(
-    r"\b(rerout\w*|redirect\w*|upgrad\w*|expedit\w*|priority|courier|drone\w*|air freight|overnight|credit\w*|"
-    r"discount\w*|waiv\w*|mov(?:e|ed|ing)|switch\w*|transferr\w*|second pick wave|ship\w* (?:it )?from|"
-    r"dispatch\w*|replac\w*|resend\w*|re-?deliver\w*|free)\b", re.I)
+ACTION_CLAIM = re.compile(  # specific remedies only; everyday words ("feel free", "dispatch") are not claims
+    r"\b(rerout\w*|redirect\w*|upgrad\w*|expedit\w*|prioriti[sz]\w*|priority (?:shipping|delivery|service)|courier|"
+    r"drone\w*|air freight|overnight|credit\w*|discount\w*|waiv\w*|second pick wave|ship\w* (?:it )?from|"
+    r"replac\w*|resend\w*|re-?deliver\w*|free (?:shipping|delivery|of charge)|switch\w* (?:carrier|to)|"
+    r"mov(?:e|ed|ing) (?:it|your order|the order) to)\b", re.I)
 # named things the message may only mention when the facts do
 CARRIER_NAME = re.compile(r"\bcarriers?\s+([a-f])\b|\b(fedex|ups|dhl|usps|amazon|ontrac|xpo|purolator)\b", re.I)
 WAREHOUSE_NAME = re.compile(r"\b(W\d|WH-?\d+)\b|\b([A-Z][a-z]+(?: \d)?) warehouse\b")
 # causes the message may only give when the facts do
-CAUSE_CLAIM = re.compile(r"\b(weather|snow\w*|storm\w*|hurricane|flood\w*|fire|strike\w*|accident\w*|traffic|road\w*|"
-                         r"highway|closure\w*|customs|holiday\w*|breakdown|mechanical|shortage\w*|staff\w*|outage\w*|"
-                         r"technical|peak|demand|volume)\b", re.I)
+CAUSE_CLAIM = re.compile(  # outside events the facts never contain; a paraphrase like "stock shortage" is fine
+    r"\b(weather|snow\w*|storm\w*|hurricane|flood\w*|wildfire|fire|strike\w*|accident\w*|traffic|road closure\w*|"
+    r"highway|customs|holiday\w*|breakdown|mechanical|outage\w*)\b", re.I)
 MONTHS = "jan|feb|mar|apr|(?-i:May)|jun|jul|aug|sep|sept|oct|nov|dec"  # "may" as a verb is not a date
 DATE_ANY = re.compile(
     rf"(?<![\w-])\d{{4}}-\d{{2}}-\d{{2}}\b|(?<![\w-])\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?\b"
@@ -88,7 +89,7 @@ def facts_for(delivery_id: str) -> dict:
         "causes": "; ".join(causes), "action": _action(row, best),
         "action_status": "proposed: operations must confirm it before this alert is sent",
         "next_update": f"by 12:00 on {next_update}",
-        "account_owner": "your Halcyon account director (direct line on your contract)" if tier1 else "n/a",
+        "account_owner": "your Halcyon account director" if tier1 else "n/a",
         "preferred_channel": "email",
         "risk": round(float(row.risk), 3),
     }

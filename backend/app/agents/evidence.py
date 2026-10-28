@@ -82,7 +82,7 @@ SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e
 # ranges like "24.7-24.8%" give both ends; "SKU-123" is a code
 FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
 REGIONS = ("Midwest", "Southeast", "Northeast", "West")
-ENTITY = re.compile(r"\bCarriers?\s+[A-F](?:(?:\s*,\s*|\s+and\s+|\s*&\s*)[A-F]\b)*"
+ENTITY = re.compile(r"\b(?i:carriers?),?\s+[A-F](?:(?:\s*,\s*|\s+and\s+|\s*&\s*)[A-F]\b)*"
                     r"|\bC\d{3}\b|\bTier\s?[123]\b|\bW\d\b|\b(?:" + "|".join(REGIONS) + r")\b")
 ENTITY_REACH = 60  # a figure belongs to the entity named at most this many characters before it, in the same clause
 
@@ -115,7 +115,7 @@ def _figures(text: str) -> list[tuple[float, float]]:
 
 def _ent_set(e: str) -> set[str]:
     if e.lower().startswith("carrier"):
-        return set(re.findall(r"\b[A-F]\b", e.split(None, 1)[1]))
+        return set(re.findall(r"\b[A-F]\b", e.split(None, 1)[1].lstrip(", ")))
     return {e.replace(" ", "") if e.startswith("Tier") else e}
 
 

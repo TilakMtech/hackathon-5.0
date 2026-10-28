@@ -63,7 +63,7 @@ def test_alert_checks_catch_liability_and_invented_dates():
     # audit repro: an invented remedy used to pass; now it is named and blocked
     invented = Alert(subject="Update on ORD-1", body="We have rerouted your order by drone, upgraded you to priority, via Carrier E.")
     c = check_alert(invented, facts)
-    assert not c["passed"] and {"rerouted", "drone", "priority", "upgraded"} <= set(c["actions_not_in_facts"])
+    assert not c["passed"] and {"rerouted", "drone", "upgraded"} <= set(c["actions_not_in_facts"])
     assert c["names_not_in_facts"] == ["Carrier E"]
 
 
@@ -319,3 +319,29 @@ def test_deployment_without_a_key_refuses_model_calls_and_bad_inputs_are_400(mon
     monkeypatch.setattr(settings, "api_key", "")
     assert client.post("/api/ask", json={"question": "Which carrier is worst?"}).status_code == 503
     assert client.post("/api/simulate", json={"fixes": {"drv_lane": "NaN"}}).status_code in (400, 422)
+
+
+def test_run7_false_flags_fixed_everyday_words_pass_and_the_next_carrier_is_traced():
+    f = {"promised_date": "2026-09-15", "new_estimate": "none", "order_ref": "ORD-9", "next_update": "by 12:00 on 2026-09-16",
+         "causes": "the delivery address was incomplete; the item was out of stock at your nearest warehouse",
+         "action": "we have asked your team to confirm the full address and will dispatch as soon as it is confirmed"}
+    a = Alert(subject="Delay notice: order ORD-9", body="Your order ORD-9, due 2026-09-15, is at risk: the address was incomplete and "
+              "there was a stock shortage at your nearest warehouse. We have asked your team to confirm the address. "
+              "Next update by 12:00 on 2026-09-16. Please feel free to contact your Halcyon account director.")
+    assert check_alert(a, f)["passed"], check_alert(a, f)
+    from app.agents.schemas import EvidenceAnswer
+    trace = [{"output": {"rows": [["D", 0.3948, 3525, 8928], ["F", 0.3148, 2179, 6921]]}}]
+    ans = EvidenceAnswer(answer="Carrier D has the worst late rate, at 39.5% (3,525 late deliveries out of 8,928 total). "
+                                "This is notably higher than the next worst carrier, F, at 31.5%.", answerable=True)
+    assert evidence.grounding(ans, trace)["grounded"]
+
+
+def test_blank_postcode_is_taken_from_the_models_own_quote_only_when_it_is_in_the_email():
+    email = "pls ship SKU-12345 qty10. svc: same day. addr: 9345 Industrial Drive, Madison, WI 53663."
+    base = dict(order_lines=[{"sku": "SKU-12345", "qty": 10}], commitment_type="same_day", confidence=0.95,
+                delivery_address={"line1": "9345 Industrial Drive", "city": "Madison", "state": "WI", "postcode": None},
+                missing_fields=["postcode"])
+    x, filled = intake.reconcile(Extraction(**base, evidence={"postcode": "53663"}), email)
+    assert filled == ["postcode"] and x.delivery_address.postcode == "53663" and x.missing_fields == []
+    _, none = intake.reconcile(Extraction(**base, evidence={"postcode": "53999"}), email)  # quote not in the email
+    assert none == []

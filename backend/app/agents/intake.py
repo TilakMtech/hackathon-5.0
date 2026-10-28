@@ -184,6 +184,27 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
             "injection_detected": injection, "risks": risks}
 
 
+RECONCILE = {"postcode": re.compile(r"\d{5}"), "state": re.compile(r"[A-Za-z]{2}")}
+
+
+def reconcile(x: Extraction, email_body: str) -> tuple[Extraction, list[str]]:
+    """Quote-then-extract, enforced: when the model quoted a postcode or state but left the field blank, take the value
+    from its own quote, only if the quote is exactly that shape and appears in the order part of the email.
+    Seen in real runs: Haiku's notes say "postcode 12121 is copied" while the field stays null."""
+    order_n = _norm(order_part(email_body))
+    addr = x.delivery_address.model_dump()
+    filled = []
+    for k, shape in RECONCILE.items():
+        q = (x.evidence.get(k) or "").strip()
+        if not addr.get(k) and shape.fullmatch(q) and _norm(q) in order_n:
+            addr[k] = q.upper() if k == "state" else q
+            filled.append(k)
+    if not filled:
+        return x, []
+    return x.model_copy(update={"delivery_address": x.delivery_address.model_copy(update={k: addr[k] for k in filled}),
+                                "missing_fields": [f for f in x.missing_fields if f not in filled]}), filled
+
+
 def extract(email: dict, provider_name: str | None = None) -> dict:
     """email: {client_id, email_format_id, received_ts, body, default_address, [email_id, truth]}"""
     provider = get_provider(provider_name)
@@ -192,6 +213,7 @@ def extract(email: dict, provider_name: str | None = None) -> dict:
                           received_at=email["received_ts"], default_address=email.get("default_address", "none"),
                           email_body=email["body"])
     x = provider.structured(p1, user, Extraction, context={"email": email})
+    x, reconciled = reconcile(x, email["body"])
     checks = guardrails(email["body"], email.get("default_address", ""), x, email["received_ts"])
 
     request = None
@@ -206,7 +228,7 @@ def extract(email: dict, provider_name: str | None = None) -> dict:
         draft = provider.structured(p2, p2.render_user(**values), EmailDraft, context=values)
         request = {**draft.model_dump(), "checks": request_checks(draft, email["body"], checks["missing_fields"])}
 
-    return {"extraction": x.model_dump(), "guardrails": checks, "address_request": request,
+    return {"extraction": x.model_dump(), "guardrails": {**checks, "reconciled_from_quote": reconciled}, "address_request": request,
             "provider": provider.name, "prompt": p1.ref}
 
 

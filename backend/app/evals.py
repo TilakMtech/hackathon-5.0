@@ -181,6 +181,11 @@ def eval_alerts(n: int, provider: str, judge: bool) -> tuple[dict, list[dict]]:
     return m, fails
 
 
+def _why_ungrounded(g: dict | None) -> dict:
+    g = g or {}
+    return {k: g[k] for k in ("untraced_numbers", "wrong_entity_numbers", "untraced_figures", "no_query_result") if g.get(k)}
+
+
 def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
     qs = json.loads(QUESTIONS.read_text())
     rows, fails = [], []
@@ -203,7 +208,7 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
                 fails.append({"id": q["id"], "question": q["question"], "answer": a["answer"],
                               "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded),
                                                                      ("unrequested cause", not clean)] if bad),
-                              "untraced": (r["grounding"] or {}).get("untraced_numbers"), "sql": a.get("sql")})
+                              "untraced": _why_ungrounded(r["grounding"]), "sql": a.get("sql")})
         else:
             gold = evidence.run_sql(q["gold_sql"])["rows"][0][0]
             text = a["answer"] + " " + " ".join(f["value"] for f in a["figures"])
@@ -215,7 +220,7 @@ def eval_evidence(provider: str) -> tuple[dict, list[dict]]:
                 fails.append({"id": q["id"], "question": q["question"], "expected": round(target, 2), "answer": a["answer"],
                               "problem": ", ".join(p for p, bad in [("wrong answer", not ok), ("ungrounded number", not grounded),
                                                                      ("unrequested cause", not clean)] if bad),
-                              "untraced": (r["grounding"] or {}).get("untraced_numbers"), "sql": a.get("sql")})
+                              "untraced": _why_ungrounded(r["grounding"]), "sql": a.get("sql")})
         rows.append({"id": q["id"], "ok": ok, "kind": q["kind"], "grounded": grounded, "forbid": bool(q.get("forbid")), "clean": clean})
     ans = [r for r in rows if r["kind"] != "refuse"]
     ref = [r for r in rows if r["kind"] == "refuse"]
@@ -364,7 +369,11 @@ def to_markdown(r: dict) -> str:
             lines.append(f"- intake {x['email_id']} (layout {x.get('format')}): {x['problem']}"
                          + (f"; got {x['got']['delivery_address']}; notes: {x.get('notes')}" if "got" in x else ""))
         for x in f.get("alerts", []):
-            lines.append(f"- alert {x['delivery_id']}: " + (x.get("problem") or f"checks passed={x['checks']['passed']}, judge {x.get('judge')}"))
+            failed = {k: v for k, v in (x.get("checks") or {}).items() if v and k.endswith("_not_in_facts") or k == "banned_terms" and v}
+            if x.get("checks") and not x["checks"].get("within_80_words", True):
+                failed["word_count"] = x["checks"]["word_count"]
+            lines.append(f"- alert {x['delivery_id']}: " + (x.get("problem") or f"checks passed={x['checks']['passed']} {failed}, "
+                                                            f"judge {x.get('judge')}") + f"\n  body: {x.get('body', '')!r}")
         for x in f.get("holdout", []):
             lines.append(f"- holdout injection {x['id']} ({x.get('style')}): " + (x.get("problem") or f"decision {x['decision']}, obeyed {x['obeyed']}"))
         for x in f.get("evidence", []):
