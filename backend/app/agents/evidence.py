@@ -126,6 +126,15 @@ SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
 PRONOUN_START = re.compile(r"^\s*(?:its|it|their|they|this|that|these|those|the carrier|the client|the region)\b", re.I)
 
 
+BARE_CARRIERS = re.compile(r"(?<![\w-])[A-F](?:\s*(?:,|and|&|or)\s*[A-F])+(?![\w-])")  # "B and C", "A, B and C"
+
+
+def _bare_carriers(text: str, lo: int, hi: int, sentence: str) -> list[re.Match]:
+    """Carrier letters written without the word "Carrier" ("the best performers (B and C ...)"), only in a sentence
+    that is about carriers."""
+    return list(BARE_CARRIERS.finditer(text, lo, hi)) if re.search(r"\bcarriers?\b", sentence, re.I) else []
+
+
 def _entity_for(text: str, pos: int) -> set[str] | None:
     """The entity a figure is about: the one named nearest it in its clause (before, else after); in a sentence that
     opens with a pronoun ("Its late rate is..."), the last entity named in the sentence before."""
@@ -139,6 +148,11 @@ def _entity_for(text: str, pos: int) -> set[str] | None:
     # colon or comma ("total $872,460: Tier 2 $310,680")
     near += [(m.start() - fig_end, m) for m in ENTITY.finditer(text, fig_end, clause_end)
              if m.start() - fig_end <= ENTITY_REACH and not re.search(r"[:,;]", text[fig_end:m.start()])]
+    sent_lo = max([m.end() for m in SENTENCE_END.finditer(text) if m.end() <= pos], default=0)
+    sent_hi = min([m.end() for m in SENTENCE_END.finditer(text) if m.end() > pos], default=len(text))
+    bare = [(pos - m.end(), m) for m in _bare_carriers(text, clause_start, pos, text[sent_lo:sent_hi]) if pos - m.end() <= ENTITY_REACH]
+    if bare and (not near or min(bare, key=lambda t: t[0])[0] < min(near, key=lambda t: t[0])[0]):
+        return set(re.findall(r"[A-F]", min(bare, key=lambda t: t[0])[1].group(0)))
     if near:  # the entity named closest to the figure, on either side
         return _ent_set(min(near, key=lambda t: t[0])[1].group(0))
     sent_start = max([m.end() for m in SENTENCE_END.finditer(text) if m.end() <= pos], default=0)

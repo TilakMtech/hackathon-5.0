@@ -491,3 +491,19 @@ def test_round4_action_must_be_verbatim_so_its_condition_survives_and_counts_bin
     assert ok("Carrier D had 8,928 total deliveries.") and ok("Carrier D had 3,525 late deliveries.")
     assert ok("Carrier D: 39.5% late (3,525 of 8,928 deliveries).")
     assert ok("Carrier D handled a total of 8,928 deliveries, 3,525 of them late.")
+
+
+def test_run8_bare_carrier_letters_bind_in_a_carrier_sentence():
+    from app.agents.schemas import EvidenceAnswer as A
+    t = [{"output": {"columns": ["carrier_id", "deliveries", "late_deliveries", "late_rate"],
+                     "rows": [["D", 8928, 3525, 0.3948], ["F", 6921, 2179, 0.3148], ["E", 5334, 1599, 0.2998],
+                              ["A", 10650, 2638, 0.2477], ["C", 6745, 1669, 0.2474], ["B", 9762, 2409, 0.2468]]}}]
+
+    def ok(x):
+        return evidence.grounding(A(answer=x, answerable=True), t)["grounded"]
+
+    assert ok("Carrier D is the worst performer, with 8,928 deliveries and 3,525 late, for a late rate of 39.5%. That is well above "
+              "the next worst carrier, F, which has a 31.5% late rate out of 6,921 deliveries, and far above the best performers "
+              "(B and C, both around 24.7%).")  # Q13 in run 8
+    assert not ok("Carrier D is worst at 39.5% late. That is far above the best carriers (B and C, both around 39.5%).")
+    assert not ok("Carrier D is worst at 39.5% late; carriers E and F sit at 24.7%.")
