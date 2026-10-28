@@ -1,9 +1,13 @@
 """Halcyon OTD control tower API (slice 1: analytics)."""
 from __future__ import annotations
 
+import threading
+import time
+import uuid
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -115,12 +119,32 @@ def _llm_error(exc: Exception) -> HTTPException:
     return HTTPException(502, f"LLM call failed: {exc}")
 
 
+_HITS: dict[str, deque] = defaultdict(deque)
+_HITS_LOCK = threading.Lock()
+
+
+def paid(request: Request) -> None:
+    """Guard for endpoints that call a paid model: API key (when configured) + per-IP rate limit."""
+    if settings.api_key and request.headers.get("x-api-key") != settings.api_key:
+        raise HTTPException(401, "missing or wrong X-API-Key")
+    ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    with _HITS_LOCK:
+        q = _HITS[ip]
+        while q and now - q[0] > 60:
+            q.popleft()
+        if len(q) >= settings.rate_limit_per_min:
+            raise HTTPException(429, "rate limit: too many model calls, try again in a minute")
+        q.append(now)
+
+
 @app.get("/api/llm/status")
 def llm_status() -> dict:
     try:
         p = get_provider()
         return {"provider": p.name, "models": {"fast": p.model_for("fast"), "smart": p.model_for("smart")},
-                "is_mock": p.name == "mock", "prompts": [pr.ref for pr in all_prompts()]}
+                "is_mock": p.name == "mock", "prompts": [pr.ref for pr in all_prompts()],
+                "auth_required": bool(settings.api_key)}
     except Exception as exc:  # misconfigured provider: report it instead of crashing the dashboard
         return {"provider": settings.llm_provider, "error": str(exc), "is_mock": False, "prompts": []}
 
@@ -147,7 +171,7 @@ class IntakeRequest(BaseModel):
 
 
 @app.post("/api/intake/extract")
-def intake_extract(req: IntakeRequest) -> dict:
+def intake_extract(req: IntakeRequest, _: None = Depends(paid)) -> dict:
     if req.email_id:
         email = next((e for e in load_emails() if e["email_id"] == req.email_id), None)
         if not email:
@@ -182,7 +206,7 @@ def alert_trigger_stats() -> dict:
 
 
 @app.post("/api/alerts/draft")
-def alert_draft(req: AlertRequest) -> dict:
+def alert_draft(req: AlertRequest, _: None = Depends(paid)) -> dict:
     try:
         return alert_agent.draft(req.delivery_id, judge=req.judge)
     except KeyError as exc:
@@ -196,7 +220,7 @@ class AskRequest(BaseModel):
 
 
 @app.post("/api/ask")
-def ask(req: AskRequest) -> dict:
+def ask(req: AskRequest, _: None = Depends(paid)) -> dict:
     try:
         return evidence_agent.ask(req.question)
     except Exception as exc:
@@ -204,15 +228,55 @@ def ask(req: AskRequest) -> dict:
 
 
 @app.get("/api/evals/latest")
-def evals_latest() -> dict:
+def evals_latest(kind: str = Query("release", pattern="^(release|partial)$")) -> dict:
     from . import evals
-    r = evals.latest()
+    r = evals.latest(kind)
     if not r:
         raise HTTPException(404, "no eval report yet: run `python -m app.evals` or POST /api/evals/run")
     return r
 
 
-@app.post("/api/evals/run")
-def evals_run(limit: int = Query(60, ge=5, le=300), alerts: int = Query(10, ge=1, le=50)) -> dict:
+_JOBS: dict[str, dict] = {}
+_JOB_LOCK = threading.Lock()
+
+
+def _run_job(job_id: str, limit: int, alerts: int, only: str | None) -> None:
     from . import evals
-    return evals.run(limit=limit, n_alerts=alerts)
+    job = _JOBS[job_id]
+
+    def hook(msg: str) -> None:
+        job["progress"] = msg
+        job["steps"] += 1
+
+    evals.PROGRESS_HOOK = hook
+    try:
+        job["report"] = evals.run(limit=limit, n_alerts=alerts, only=only)
+        job["status"] = "done"
+    except Exception as exc:  # a failed run is reported, never silently dropped
+        job["status"], job["error"] = "failed", str(exc)
+    finally:
+        evals.PROGRESS_HOOK = None
+        job["finished_at"] = time.time()
+
+
+@app.post("/api/evals/run")
+def evals_run(limit: int = Query(300, ge=5, le=300), alerts: int = Query(20, ge=1, le=50),
+              only: str | None = Query(None, pattern="^(intake|alerts|evidence)$"), _: None = Depends(paid)) -> dict:
+    """Starts the eval suite in the background (a full run takes minutes) and returns a job to poll."""
+    with _JOB_LOCK:
+        running = next((j for j in _JOBS.values() if j["status"] == "running"), None)
+        if running:
+            return {k: v for k, v in running.items() if k != "report"}
+        job_id = uuid.uuid4().hex[:12]
+        _JOBS[job_id] = {"job_id": job_id, "status": "running", "progress": "starting", "steps": 0,
+                         "started_at": time.time(), "params": {"limit": limit, "alerts": alerts, "only": only}}
+    threading.Thread(target=_run_job, args=(job_id, limit, alerts, only), daemon=True).start()
+    return {k: v for k, v in _JOBS[job_id].items() if k != "report"}
+
+
+@app.get("/api/evals/jobs/{job_id}")
+def evals_job(job_id: str) -> dict:
+    job = _JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "unknown job")
+    return job

@@ -83,7 +83,16 @@ def test_api_agents_end_to_end():
 
 
 def test_eval_harness_runs_and_gates_catch_baseline_errors():
-    r = client.post("/api/evals/run?limit=30&alerts=3").json()
+    import time
+    job = client.post("/api/evals/run?limit=30&alerts=3").json()
+    for _ in range(300):
+        job = client.get(f"/api/evals/jobs/{job['job_id']}").json()
+        if job["status"] != "running":
+            break
+        time.sleep(0.2)
+    assert job["status"] == "done", job
+    r = job["report"]
+    assert not r["release_qualifying"] and not r["release_ready"]  # a 30-email mock run can never qualify a release
     names = {g["gate"] for g in r["gates"]}
     assert "intake.injection_obeyed" in names and r["is_mock"]
     inj = next(g for g in r["gates"] if g["gate"] == "intake.injection_obeyed")
@@ -215,3 +224,30 @@ def test_ungrounded_answer_gets_one_repair_round_and_is_marked_unverified(monkey
     r = evidence.ask("Were we on time?")
     assert len(calls) == 2 and "without a successful query" in calls[1]
     assert r["status"] == "unverified" and r["repaired"]
+
+
+
+def test_paid_endpoints_need_the_api_key_when_one_is_set(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "api_key", "s3cret")
+    assert client.post("/api/ask", json={"question": "Which carrier is worst?"}).status_code == 401
+    ok = client.post("/api/ask", json={"question": "Which carrier is worst?"}, headers={"X-API-Key": "s3cret"})
+    assert ok.status_code == 200
+    assert client.get("/api/overview").status_code == 200  # analytics stay open
+
+
+def test_eval_errors_count_as_failures_not_skips(monkeypatch):
+    from app import evals
+    emails = load_emails()[:2]
+    real = intake.extract
+    calls = {"n": 0}
+
+    def flaky(e, provider=None):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("provider down")
+        return real(e, provider)
+
+    monkeypatch.setattr(evals.intake, "extract", flaky)
+    m, fails, _ = evals.eval_intake(emails, "mock")
+    assert m["errors"] == 1 and m["fully_correct"] <= 0.5  # used to report 100% on the one success

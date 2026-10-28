@@ -7,6 +7,7 @@
     "useAcrAdmin": { "value": true },
     "llmProvider": { "value": "${OTD_LLM_PROVIDER=mock}" },
     "foundryResource": { "value": "${FOUNDRY_RESOURCE=}" },
-    "foundryApiKey": { "value": "${FOUNDRY_API_KEY=}" }
+    "foundryApiKey": { "value": "${FOUNDRY_API_KEY=}" },
+    "otdApiKey": { "value": "${OTD_API_KEY=}" }
   }
 }

@@ -34,13 +34,20 @@ azd env new csc-blp-otd
 azd env set AZURE_SUBSCRIPTION_ID dd8b37ac-5702-4df4-8a27-210a80f8d7f4
 azd env set AZURE_RESOURCE_GROUP rg-csc-blp
 azd env set AZURE_LOCATION centralus
+# To run the agents on Claude, also set these (the dashboard is public, so a key protects the paid endpoints):
+# azd env set OTD_LLM_PROVIDER claude_foundry
+# azd env set FOUNDRY_RESOURCE csc-blp-foundry-cus
+# azd env set FOUNDRY_API_KEY <key from the Foundry portal>
+# azd env set OTD_API_KEY <any long random string; share it only with the demo team>
 azd up
 ```
+
+The API container is internal: only the dashboard reaches it. When `OTD_API_KEY` is set, the dashboard shows a key field next to the AI badge, and AI calls are rate-limited per client IP (30 a minute by default). Analytics tabs stay open. This Bicep has not been deployed yet, so treat the first `azd up` as a test.
 
 `azd up` takes about 8–12 minutes the first time. At the end it prints two URLs:
 
 - `SERVICE_WEB_URI` is the dashboard to open in the browser and show the judges.
-- `SERVICE_API_URI` is the API. Add `/docs` to see the interactive API docs.
+- `SERVICE_API_URI` is the API's internal address (not reachable from the internet).
 
 ### What gets created in rg-csc-blp
 

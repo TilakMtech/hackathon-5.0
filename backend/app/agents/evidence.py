@@ -78,10 +78,11 @@ NON_FIGURES = re.compile(
     rf"|\b{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b(?:,?\s+\d{{4}})?"         # dates: "April 1", "Sep 30, 2026"
     rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?=\W|$)", re.I)             # dates: "1 April"
 SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
-FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)  # ranges like "24.7-24.8%" give both ends; "SKU-123" is a code
+# ranges like "24.7-24.8%" give both ends; "SKU-123" is a code
+FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
 REGIONS = ("Midwest", "Southeast", "Northeast", "West")
-ENTITY = re.compile(r"\bCarriers?\s+[A-F](?:(?:\s*,\s*|\s+and\s+|\s*&\s*)[A-F]\b)*|\bC\d{3}\b|\bTier\s?[123]\b|\bW\d\b|\b(?:"
-                    + "|".join(REGIONS) + r")\b")
+ENTITY = re.compile(r"\bCarriers?\s+[A-F](?:(?:\s*,\s*|\s+and\s+|\s*&\s*)[A-F]\b)*"
+                    r"|\bC\d{3}\b|\bTier\s?[123]\b|\bW\d\b|\b(?:" + "|".join(REGIONS) + r")\b")
 ENTITY_REACH = 60  # a figure belongs to the entity named at most this many characters before it, in the same clause
 
 

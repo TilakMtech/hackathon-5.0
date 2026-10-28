@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Bar, BarChart, Cell, LabelList, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
-import { get, pct, post } from './api'
+import { apiKey, get, pct, post, setApiKey } from './api'
 
 // ---------- shared types ----------
 type Addr = { line1: string | null; city: string | null; state: string | null; postcode: string | null }
@@ -43,10 +43,12 @@ type EvalReport = {
     intake: Record<string, number> & { accuracy_by_format: Record<string, number> }
     requests: Record<string, number>; alerts: Record<string, number>; evidence: Record<string, number>
   }
-  gates: Gate[]; all_gates_passed: boolean
-  failures: { intake: { email_id: string; format?: number; problem: string; decision?: string }[] }
+  gates: Gate[]; all_gates_passed: boolean; release_qualifying?: boolean; release_ready?: boolean
+  coverage?: { emails: number; alerts: number; questions: number; judge: boolean }
+  failures: { intake?: { email_id: string; format?: number; problem: string; decision?: string }[] }
 }
-export type LlmStatus = { provider: string; is_mock: boolean; models?: { fast: string; smart: string }; error?: string; prompts: string[] }
+type EvalJob = { job_id: string; status: 'running' | 'done' | 'failed'; progress: string; steps: number; error?: string; report?: EvalReport }
+export type LlmStatus = { provider: string; is_mock: boolean; models?: { fast: string; smart: string }; error?: string; prompts: string[]; auth_required?: boolean }
 
 const DECISION: Record<string, { label: string; tone: string; note: string }> = {
   auto_accept: { label: 'Auto-accept (proposed)', tone: 'good', note: 'Complete, grounded, confident: proposed for the WMS without manual keying. This slice does not write to a WMS yet.' },
@@ -61,7 +63,9 @@ function Err({ msg }: { msg: string | null }) {
 export function ProviderBadge({ s }: { s: LlmStatus | null }) {
   if (!s) return null
   const label = s.error ? `AI: ${s.provider} (not configured)` : s.is_mock ? 'AI: rule-based baseline (mock)' : `AI: ${s.provider} · ${s.models?.fast} / ${s.models?.smart}`
-  return <span className={`badge ${s.error ? 'bad' : s.is_mock ? 'warn' : 'good'}`} title={s.prompts.join('\n')}>{label}</span>
+  const badge = <span className={`badge ${s.error ? 'bad' : s.is_mock ? 'warn' : 'good'}`} title={s.prompts.join('\n')}>{label}</span>
+  if (!s.auth_required) return badge
+  return <>{badge} <input className="small" type="password" placeholder="API key for AI calls" defaultValue={apiKey()} onChange={(e) => setApiKey(e.target.value)} aria-label="API key for AI calls" /></>
 }
 
 function Highlight({ text, quotes }: { text: string; quotes: string[] }) {
@@ -263,15 +267,36 @@ export function QualityPage() {
   const [r, setR] = useState<EvalReport | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [progress, setProgress] = useState<string | null>(null)
   useEffect(() => { get<EvalReport>('/api/evals/latest').then(setR).catch(() => setError('No report yet. Click "Run evals".')) }, [])
-  const run = () => { setBusy(true); setError(null); post<EvalReport>('/api/evals/run?limit=300&alerts=20', {}).then(setR).catch((e: Error) => setError(e.message)).finally(() => setBusy(false)) }
-  const fmt = r ? Object.entries(r.metrics.intake.accuracy_by_format).map(([k, v]) => ({ layout: k, acc: v })) : []
-  const i = r?.metrics.intake
+  const run = () => {
+    setBusy(true); setError(null)
+    post<EvalJob>('/api/evals/run?limit=300&alerts=20', {}).then((job) => {
+      const poll = () => get<EvalJob>(`/api/evals/jobs/${job.job_id}`).then((j) => {
+        setProgress(`${j.progress} (${j.steps} steps)`)
+        if (j.status === 'running') { setTimeout(poll, 3000); return }
+        if (j.status === 'done' && j.report) setR(j.report)
+        if (j.status === 'failed') setError(`Eval run failed: ${j.error}`)
+        setBusy(false); setProgress(null)
+      }).catch((e: Error) => { setError(e.message); setBusy(false) })
+      poll()
+    }).catch((e: Error) => { setError(e.message); setBusy(false) })
+  }
+  // a partial run (e.g. --only evidence) has no intake metrics: render what exists, never crash
+  const fmt = r?.metrics.intake?.accuracy_by_format ? Object.entries(r.metrics.intake.accuracy_by_format).map(([k, v]) => ({ layout: k, acc: v })) : []
+  const i = r?.metrics.intake && 'emails' in r.metrics.intake ? r.metrics.intake : null
   return (
     <>
-      <p className="lead">Prompts are tested like code. Every change runs against a golden set of 300 synthetic emails covering all 14 layouts, with incomplete addresses and 20 prompt-injection attempts, plus 20 alerts and 17 leadership questions. A failed gate blocks the release in CI.</p>
-      <div className="row"><button className="primary" onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run evals now'}</button>{r && <span className="muted small">Last run {r.run_at} · {r.provider} · {r.duration_s}s · tokens in/out/cached {r.tokens.input}/{r.tokens.output}/{r.tokens.cache_read}</span>}</div>
+      <p className="lead">Prompts are tested like code. A release run covers a golden set of 300 synthetic emails in all 14 layouts (incomplete addresses and 20 injection attempts), 12 unseen injection styles held out from prompt tuning, 20 replayed alerts and 17 leadership questions. Crashes count as failures. In CI the release stage runs this on Claude with <code>--enforce</code> and stops the release unless the run is complete and every gate passes.</p>
+      <div className="row"><button className="primary" onClick={run} disabled={busy}>{busy ? 'Running…' : 'Run evals now'}</button>{progress && <span className="muted small">{progress}</span>}{r && <span className="muted small">Last run {r.run_at} · {r.provider} · {r.duration_s}s · tokens in/out/cached {r.tokens.input}/{r.tokens.output}/{r.tokens.cache_read}</span>}</div>
       <Err msg={error} />
+      {r && (r.release_qualifying
+        ? <div className={`card ${r.release_ready ? 'good' : 'bad'}`}><b>Release-qualifying run: {r.release_ready ? 'release ready' : 'release blocked'}</b> · {r.coverage?.emails} emails, {r.coverage?.alerts} alerts, {r.coverage?.questions} questions, judge on</div>
+        : <div className="card warn"><b>Partial or baseline run: a smoke test, not release qualification</b>{r.coverage && <> · {r.coverage.emails} emails, {r.coverage.alerts} alerts, {r.coverage.questions} questions, judge {r.coverage.judge ? 'on' : 'off'}</>}</div>)}
+      {r && !i && (
+        <section className="card"><h3>Release gates</h3>
+          <table><tbody>{r.gates.map((g) => <tr key={g.gate}><td>{g.gate}</td><td className="r">{fmtVal(g)}</td><td className={g.passed === null ? 'muted' : g.passed ? 'good' : 'bad'}>{g.passed === null ? 'not run' : g.passed ? 'pass' : 'fail'}</td></tr>)}</tbody></table>
+        </section>)}
       {r && i && (
         <>
           {r.is_mock && <div className="card warn">This run used the <b>rule-based baseline (mock)</b>, not a model. It shows why rules are not enough: the gates catch its mistakes. Set <code>OTD_LLM_PROVIDER=claude_foundry</code> to evaluate the real prompts on the same golden set.</div>}
@@ -283,7 +308,7 @@ export function QualityPage() {
           </div>
           <div className="grid2">
             <section className="card">
-              <h3>Release gates {r.all_gates_passed ? '· all passed' : '· blocked'}</h3>
+              <h3>Release gates {r.all_gates_passed ? '· all passed' : '· not all passed'}</h3>
               <table><thead><tr><th>Gate</th><th className="r">Value</th><th className="r">Threshold</th><th>Result</th></tr></thead>
                 <tbody>{r.gates.map((g) => (
                   <tr key={g.gate} title={g.why}><td>{g.gate}<div className="muted small">{g.note ?? g.why}</div></td><td className="r">{fmtVal(g)}</td><td className="r">{g.op} {g.threshold <= 1 && g.op === '>=' ? pct(g.threshold, 0) : g.threshold}</td>
@@ -304,7 +329,7 @@ export function QualityPage() {
                 </BarChart>
               </ResponsiveContainer>
               <h3>First failures (debug these prompts first)</h3>
-              <table><tbody>{r.failures.intake.slice(0, 8).map((f) => <tr key={f.email_id}><td>{f.email_id}</td><td>layout {f.format}</td><td>{f.problem}</td><td className="muted">{f.decision}</td></tr>)}</tbody></table>
+              <table><tbody>{(r.failures.intake ?? []).slice(0, 8).map((f) => <tr key={f.email_id}><td>{f.email_id}</td><td>layout {f.format}</td><td>{f.problem}</td><td className="muted">{f.decision}</td></tr>)}</tbody></table>
               <div className="muted small pad">Prompts under test: {r.prompts.join(', ')}</div>
             </section>
           </div>

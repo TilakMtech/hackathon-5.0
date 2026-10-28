@@ -8,7 +8,7 @@ server {
     proxy_pass ${API_URL};
     proxy_set_header Host $proxy_host;
     proxy_ssl_server_name on;
-    proxy_read_timeout 60s;
+    proxy_read_timeout 120s;  # an evidence answer with one repair round can take ~30s; eval runs are background jobs
   }
 
   location / {

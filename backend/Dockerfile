@@ -5,7 +5,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY data ./data
-RUN useradd -m appuser
+RUN useradd -m appuser && mkdir -p /srv/reports/evals /srv/logs && chown -R appuser /srv/reports /srv/logs
 USER appuser
 EXPOSE 8000
 HEALTHCHECK CMD python -c "import urllib.request;urllib.request.urlopen('http://localhost:8000/api/health')"

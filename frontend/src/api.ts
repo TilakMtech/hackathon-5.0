@@ -64,10 +64,21 @@ export async function get<T>(path: string): Promise<T> {
   return r.json() as Promise<T>
 }
 
+// API key for the endpoints that call a paid model, when the server requires one (kept for this browser tab only)
+export function apiKey(): string {
+  try { return sessionStorage.getItem('otd_api_key') ?? '' } catch { return '' }
+}
+export function setApiKey(k: string): void {
+  try { sessionStorage.setItem('otd_api_key', k) } catch { /* storage unavailable: key lasts until reload */ }
+}
+
 export async function post<T>(path: string, body: unknown): Promise<T> {
-  const r = await fetch(`${base}${path}`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  })
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+  const k = apiKey()
+  if (k) headers['X-API-Key'] = k
+  const r = await fetch(`${base}${path}`, { method: 'POST', headers, body: JSON.stringify(body) })
+  if (r.status === 401) throw new Error('This server needs an API key for AI calls: enter it next to the AI badge.')
+  if (r.status === 429) throw new Error('Rate limit reached for AI calls: try again in a minute.')
   if (!r.ok) throw new Error(`${path}: ${r.status}`)
   return r.json() as Promise<T>
 }

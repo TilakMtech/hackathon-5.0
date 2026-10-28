@@ -21,6 +21,10 @@ param foundryResource string = ''
 @description('Foundry API key. Stored as a Container Apps secret, never in plain env or source.')
 param foundryApiKey string = ''
 
+@secure()
+@description('API key the dashboard must send for model-calling endpoints (intake, alerts, ask, eval runs). Required whenever llmProvider is not mock, because the dashboard is public.')
+param otdApiKey string = ''
+
 @description('Images are set by azd deploy; these placeholders let the first provision succeed.')
 param apiImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 param webImage string = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
@@ -93,11 +97,12 @@ var registries = useAcrAdmin
   ? [{ server: acr.properties.loginServer, username: acr.listCredentials().username, passwordSecretRef: 'acr-password' }]
   : [{ server: acr.properties.loginServer, identity: pullIdentity.id }]
 var registrySecrets = useAcrAdmin ? [{ name: 'acr-password', value: acr.listCredentials().passwords[0].value }] : []
-var llmSecrets = empty(foundryApiKey) ? [] : [{ name: 'foundry-api-key', value: foundryApiKey }]
-var llmKeyEnv = empty(foundryApiKey) ? [] : [
+var llmSecrets = concat(empty(foundryApiKey) ? [] : [{ name: 'foundry-api-key', value: foundryApiKey }],
+  empty(otdApiKey) ? [] : [{ name: 'otd-api-key', value: otdApiKey }])
+var llmKeyEnv = concat(empty(foundryApiKey) ? [] : [
   { name: 'ANTHROPIC_FOUNDRY_API_KEY', secretRef: 'foundry-api-key' }
   { name: 'OTD_AOAI_API_KEY', secretRef: 'foundry-api-key' }
-]
+], empty(otdApiKey) ? [] : [{ name: 'OTD_API_KEY', secretRef: 'otd-api-key' }])
 var identityBlock = useAcrAdmin ? { type: 'None' } : { type: 'UserAssigned', userAssignedIdentities: { '${pullIdentity.id}': {} } }
 
 resource api 'Microsoft.App/containerApps@2024-03-01' = {
@@ -110,7 +115,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
     managedEnvironmentId: env.id
     configuration: {
       ingress: {
-        external: true
+        external: false  // reachable only from the dashboard container in the same environment, not the internet
         targetPort: 8000
         transport: 'auto'
         corsPolicy: { allowedOrigins: ['*'], allowedMethods: ['GET', 'POST'] }

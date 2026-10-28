@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     intake_auto_accept_confidence: float = 0.9
     sql_row_limit: int = 200
 
+    # Endpoints that spend money on model calls (intake, alerts, ask, eval runs)
+    api_key: str = ""            # when set, those endpoints need header X-API-Key; set it whenever the API is public
+    rate_limit_per_min: int = 30  # per client IP, on those endpoints
+
     # Leadership targets
     otd_target: float = 0.85
     otd_benchmark: float = 0.94

@@ -1,20 +1,56 @@
-# Azure DevOps CI: tests the API and type-checks/builds the dashboard on every push
+# Azure DevOps CI. Every push: lint, unit tests and the dashboard build.
+# Release gate: the full prompt eval on real Claude with --enforce. It exits 1 unless the run covers the whole
+# golden set (300 emails, 20 alerts, all questions, judge on) AND every gate passes, so a prompt change that
+# regresses cannot be released. Without the Foundry key the gate step fails: no key, no release.
 trigger: [main]
 pool: { vmImage: ubuntu-latest }
-steps:
-  - task: UsePythonVersion@0
-    inputs: { versionSpec: '3.12' }
-  - script: |
-      cd backend
-      pip install -r requirements-dev.txt
-      ruff check app tests
-      pytest -q
-      python -m app.evals --limit 300 --alerts 20      # baseline run; add --provider claude_foundry --enforce once quota exists
-    displayName: API tests + prompt evals
-  - task: NodeTool@0
-    inputs: { versionSpec: '22.x' }
-  - script: |
-      cd frontend
-      npm ci
-      npm run build
-    displayName: Dashboard build
+variables:
+  - group: halcyon-foundry   # holds ANTHROPIC_FOUNDRY_API_KEY (secret) and ANTHROPIC_FOUNDRY_RESOURCE; models come from OTD_CLAUDE_*_MODEL defaults
+stages:
+  - stage: test
+    jobs:
+      - job: api
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: '3.12' }
+          - script: |
+              set -euo pipefail
+              cd backend
+              pip install -r requirements-dev.txt
+              ruff check app tests
+              pytest -q
+              python -m app.evals --provider mock --limit 30 --alerts 3   # smoke test of the harness, never a release check
+            displayName: Lint, tests, eval smoke run
+      - job: dashboard
+        steps:
+          - task: NodeTool@0
+            inputs: { versionSpec: '22.x' }
+          - script: |
+              set -euo pipefail
+              cd frontend
+              npm ci
+              npm run lint
+              npm run build
+            displayName: Dashboard lint + build
+  - stage: release_gate
+    dependsOn: test
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+    jobs:
+      - job: prompt_evals
+        timeoutInMinutes: 60
+        steps:
+          - task: UsePythonVersion@0
+            inputs: { versionSpec: '3.12' }
+          - script: |
+              set -euo pipefail
+              test -n "${ANTHROPIC_FOUNDRY_API_KEY:-}" || { echo "Foundry key missing: the release gate cannot run, so release is blocked"; exit 1; }
+              cd backend
+              pip install -r requirements.txt
+              python -m app.evals --provider claude_foundry --limit 300 --alerts 20 --judge --enforce
+            displayName: Full prompt eval on Claude (blocks release on any failed gate)
+            env:
+              ANTHROPIC_FOUNDRY_API_KEY: $(ANTHROPIC_FOUNDRY_API_KEY)
+              ANTHROPIC_FOUNDRY_RESOURCE: $(ANTHROPIC_FOUNDRY_RESOURCE)
+          - publish: backend/reports/evals
+            artifact: eval-reports
+            condition: always()
