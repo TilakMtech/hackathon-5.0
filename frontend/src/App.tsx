@@ -186,7 +186,7 @@ function CausesPage() {
     <>
       <p className="lead">
         Four problems before the truck leaves are flagged on most late deliveries and carry large odds ratios. Stops and route km
-        show no measurable association (odds ratio {d.routing.odds_ratio_per_stop.toFixed(2)} per stop, 95% CI {d.routing.odds_ratio_per_stop_ci95[0].toFixed(2)}–{d.routing.odds_ratio_per_stop_ci95[1].toFixed(2)}): in the model, routes 20% shorter move OTD from{' '}
+        show no measurable association (odds ratio {d.routing.odds_ratio_per_stop.toFixed(2)} per stop, 95% CI {d.routing.odds_ratio_per_stop_ci95[0].toFixed(3)}–{d.routing.odds_ratio_per_stop_ci95[1].toFixed(3)}): in the model, routes 20% shorter move OTD from{' '}
         {pct(d.otd_today_model)} to {pct(d.routing.otd_if_routes_20pct_shorter)}. These are associations in historical data, not proven causes; a pilot tests them.
       </p>
       <section className="card">
