@@ -74,7 +74,8 @@ def _numbers(text: str) -> list[float]:
 MONTH = r"(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?"
 NON_FIGURES = re.compile(
     r"\b(Tier|Carrier|W)\s?\d+|\bC\d{3}\b|\d{4}-\d{2}(-\d{2})?"          # labels: "Tier 2", "C049", "W3", "2026-08"
-    r"|\b\d{1,2}[- ](?:day|week|month|quarter|year)s?\b"                 # time spans: "6-month window", "3 days"
+    r"|\b\d{1,2}-(?:day|week|month|quarter|year)\b"                     # the data's window: "6-month window"
+    r"|\b\d{1,2} months? of (?:data|history|deliveries|records)\b"        # ... "6 months of data"; "9 days late" IS a claim
     rf"|\b{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b(?:,?\s+\d{{4}})?"         # dates: "April 1", "Sep 30, 2026"
     rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?=\W|$)", re.I)             # dates: "1 April"
 SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
@@ -112,16 +113,35 @@ def _figures(text: str) -> list[tuple[float, float]]:
     return [(v, tol) for v, tol, _ in _figures_at(text)]
 
 
-def _entity_for(text: str, pos: int) -> set[str] | None:
-    """The entity a figure is about: the last one named shortly before it in the same clause ({"D"}, {"C049"}, ...)."""
-    clause_start = max(text.rfind(c, 0, pos) for c in ".;(\n") + 1
-    hits = [m for m in ENTITY.finditer(text, clause_start, pos) if pos - m.end() <= ENTITY_REACH]
-    if not hits:
-        return None
-    e = hits[-1].group(0)
+def _ent_set(e: str) -> set[str]:
     if e.lower().startswith("carrier"):
         return set(re.findall(r"\b[A-F]\b", e.split(None, 1)[1]))
     return {e.replace(" ", "") if e.startswith("Tier") else e}
+
+
+CLAUSE_END = re.compile(r"[.;)](?=\s|$)|\(|\n")
+SENTENCE_END = re.compile(r"[.!?](?=\s|$)|\n")
+PRONOUN_START = re.compile(r"^\s*(?:its|it|their|they|this|that|these|those|the carrier|the client|the region)\b", re.I)
+
+
+def _entity_for(text: str, pos: int) -> set[str] | None:
+    """The entity a figure is about: the one named nearest it in its clause (before, else after); in a sentence that
+    opens with a pronoun ("Its late rate is..."), the last entity named in the sentence before."""
+    # clause and sentence boundaries; a decimal point ("39.5") is not one
+    bounds = [m.end() for m in CLAUSE_END.finditer(text)]
+    clause_start = max([b for b in bounds if b <= pos], default=0)
+    clause_end = min([b for b in bounds if b > pos], default=len(text))
+    fig_end = pos + len(FIGURE.match(_blank(text), pos).group(0)) if FIGURE.match(_blank(text), pos) else pos
+    near = [(pos - m.end(), m) for m in ENTITY.finditer(text, clause_start, pos) if pos - m.end() <= ENTITY_REACH]
+    near += [(m.start() - fig_end, m) for m in ENTITY.finditer(text, fig_end, clause_end) if m.start() - fig_end <= ENTITY_REACH]
+    if near:  # the entity named closest to the figure, on either side
+        return _ent_set(min(near, key=lambda t: t[0])[1].group(0))
+    sent_start = max([m.end() for m in SENTENCE_END.finditer(text) if m.end() <= pos], default=0)
+    if PRONOUN_START.match(text[sent_start:pos]):
+        prev = list(ENTITY.finditer(text, 0, sent_start))
+        if prev:
+            return _ent_set(prev[-1].group(0))
+    return None
 
 
 def _row_entities(row: list) -> set[str]:
@@ -149,6 +169,8 @@ def grounding(answer: EvidenceAnswer, trace: list[dict]) -> dict:
         for v in row:
             if isinstance(v, int | float) and not isinstance(v, bool):
                 cands += [(float(v), ents), (float(v) * 100, ents)]
+                if 0 <= float(v) <= 1:  # a late rate of 0.395 also states an on-time rate of 60.5%
+                    cands.append((100 - float(v) * 100, ents))
     for step in trace:
         rows = (step.get("output", {}) or {}).get("rows", []) or []
         for col in zip(*rows, strict=False):  # column totals are derived figures the agent may report

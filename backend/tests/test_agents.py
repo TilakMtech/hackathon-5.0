@@ -41,7 +41,7 @@ def test_guardrails_block_invented_address_and_injection():
     g = intake.guardrails(email, "1 Main St, Columbus, OH 43001", x, "2026-10-12T09:30")
     assert "city" in g["missing_fields"] and "postcode" in g["missing_fields"]
     assert g["decision"] == "human_review" and g["injection_detected"]
-    assert any("not in email" in f for f in g["flags"])
+    assert any("not in the order part of the email" in f for f in g["flags"])
 
 
 def test_sql_guard_blocks_writes_and_files():
@@ -251,3 +251,71 @@ def test_eval_errors_count_as_failures_not_skips(monkeypatch):
     monkeypatch.setattr(evals.intake, "extract", flaky)
     m, fails, _ = evals.eval_intake(emails, "mock")
     assert m["errors"] == 1 and m["fully_correct"] <= 0.5  # used to report 100% on the one success
+
+
+
+def test_reviewer_repros_wrong_orders_never_auto_accept():
+    E = {e["email_id"]: e for e in load_emails()}
+
+    def g(eid, **change):
+        e = E[eid]
+        t = e["truth"]
+        base = dict(order_lines=t["order_lines"], commitment_type=t["commitment_type"], requested_date=t["requested_date"],
+                    delivery_address=t["delivery_address"], missing_fields=t["missing_fields"], confidence=0.97,
+                    evidence={"order_lines": t["order_lines"][0]["sku"]})
+        return intake.guardrails(e["body"], e["default_address"], Extraction(**{**base, **change}), e["received_ts"])["decision"]
+
+    lines5 = E["EM0005"]["truth"]["order_lines"]  # "SKU-99593 x 120; SKU-19358 x 100"
+    assert g("EM0005", order_lines=[lines5[0], {**lines5[1], "qty": 120}],
+             evidence={"order_lines": "SKU-99593", "commitment_type": "next-day"}) == "human_review"
+    assert g("EM0036", order_lines=[{"sku": "SKU-13804", "qty": 1}, {"sku": "SKU-54057", "qty": 120}],
+             evidence={"order_lines": "SKU-13804", "commitment_type": "overnight"}) == "human_review"  # "1." is a line number
+    assert g("EM0006", order_lines=E["EM0006"]["truth"]["order_lines"] + [{"sku": "SKU-00001", "qty": 5}],
+             evidence={"order_lines": "SKU-51347", "commitment_type": "next-day"}) == "human_review"  # forwarded old order
+    chicago = {"line1": "1 Corporate Plaza", "city": "Chicago", "state": "IL", "postcode": "60601"}
+    assert g("EM0009", delivery_address=chicago, evidence={"order_lines": "SKU-54587", "commitment_type": "standard",
+                                                           "requested_date": "20 Oct 2026"}) == "human_review"  # footer address
+    assert g("EM0002", commitment_type="same_day", evidence={"order_lines": "SKU-46463", "commitment_type": "by tomorrow"}) == "human_review"
+
+
+def test_reviewer_repros_invented_alert_claims_are_blocked():
+    facts = {"promised_date": "2026-10-14", "new_estimate": "none", "order_ref": "ORD-1", "next_update": "by 12:00 on 2026-10-15",
+             "causes": "the item was not in stock at the warehouse nearest to you",
+             "action": "we are shipping it from our W4 warehouse instead"}
+    body = "Your order ORD-1, due 2026-10-14, may be late: the item was not in stock nearby, so we are shipping it from our {} "
+    ok = Alert(subject="Update on order ORD-1", body=body.format("Northeast warehouse (W4) instead. Next update tomorrow by 12:00."))
+    assert check_alert(ok, facts)["passed"], check_alert(ok, facts)
+    bad = {
+        "subject claim": Alert(subject="ORD-1 rerouted by drone", body=body.format("W4 warehouse.")),
+        "non-ISO date": Alert(subject="Update on ORD-1", body=body.format("W4 warehouse. It arrives 30 October 2026.")),
+        "slash date": Alert(subject="Update on ORD-1", body=body.format("W4 warehouse. It arrives 10/30/2026.")),
+        "lower-case carrier": Alert(subject="Update on ORD-1", body=body.format("W4 warehouse with carrier e.")),
+        "brand carrier": Alert(subject="Update on ORD-1", body=body.format("W4 warehouse with FedEx.")),
+        "other warehouse": Alert(subject="Update on ORD-1", body=body.format("Reno warehouse.")),
+        "invented cause": Alert(subject="Update on ORD-1", body=body.format("W4 warehouse after a snowstorm closed the highway.")),
+    }
+    for name, a in bad.items():
+        assert not check_alert(a, facts)["passed"], name
+
+
+def test_reviewer_repros_grounding_entity_on_either_side_pronouns_and_day_claims():
+    from app.agents.schemas import EvidenceAnswer as A
+    trace = [{"output": {"rows": [["D", 0.3948, 8928, 2.95], ["B", 0.2468, 9762, 2.78]]}}]
+
+    def ok(t):
+        return evidence.grounding(A(answer=t, answerable=True), trace)["grounded"]
+
+    assert not ok("24.7% of deliveries are late with Carrier D.")           # entity after the figure
+    assert not ok("Carrier D is the worst carrier. Its late rate is 24.7%.")  # pronoun carries the entity
+    assert not ok("Carrier D deliveries are on average 9 days late.")        # day counts are claims
+    assert ok("Carrier D has a late rate of 39.5%, so its on-time rate is 60.5%.")  # the complement is traced
+    assert ok("Carrier D is late 39.5% of the time versus 24.7% for Carrier B.")
+    assert not ok("Carrier D is late 39.5% versus 24.7% for Carrier B, a gap of 14.8 points.")  # P4: compute gaps in SQL
+
+
+def test_deployment_without_a_key_refuses_model_calls_and_bad_inputs_are_400(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "require_api_key", True)
+    monkeypatch.setattr(settings, "api_key", "")
+    assert client.post("/api/ask", json={"question": "Which carrier is worst?"}).status_code == 503
+    assert client.post("/api/simulate", json={"fixes": {"drv_lane": "NaN"}}).status_code in (400, 422)

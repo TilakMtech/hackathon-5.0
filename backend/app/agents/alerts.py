@@ -11,6 +11,7 @@ data, so every draft needs an operations approver to confirm the action before i
 from __future__ import annotations
 
 import re
+from datetime import datetime
 
 import pandas as pd
 
@@ -33,7 +34,19 @@ ACTION_CLAIM = re.compile(
     r"\b(rerout\w*|redirect\w*|upgrad\w*|expedit\w*|priority|courier|drone\w*|air freight|overnight|credit\w*|"
     r"discount\w*|waiv\w*|mov(?:e|ed|ing)|switch\w*|transferr\w*|second pick wave|ship\w* (?:it )?from|"
     r"dispatch\w*|replac\w*|resend\w*|re-?deliver\w*|free)\b", re.I)
-NAMED = re.compile(r"\bCarrier [A-F]\b|\bW\d\b")
+# named things the message may only mention when the facts do
+CARRIER_NAME = re.compile(r"\bcarriers?\s+([a-f])\b|\b(fedex|ups|dhl|usps|amazon|ontrac|xpo|purolator)\b", re.I)
+WAREHOUSE_NAME = re.compile(r"\b(W\d|WH-?\d+)\b|\b([A-Z][a-z]+(?: \d)?) warehouse\b")
+# causes the message may only give when the facts do
+CAUSE_CLAIM = re.compile(r"\b(weather|snow\w*|storm\w*|hurricane|flood\w*|fire|strike\w*|accident\w*|traffic|road\w*|"
+                         r"highway|closure\w*|customs|holiday\w*|breakdown|mechanical|shortage\w*|staff\w*|outage\w*|"
+                         r"technical|peak|demand|volume)\b", re.I)
+MONTHS = "jan|feb|mar|apr|(?-i:May)|jun|jul|aug|sep|sept|oct|nov|dec"  # "may" as a verb is not a date
+DATE_ANY = re.compile(
+    rf"(?<![\w-])\d{{4}}-\d{{2}}-\d{{2}}\b|(?<![\w-])\d{{1,2}}/\d{{1,2}}(?:/\d{{2,4}})?\b"
+    rf"|(?<![\w-])\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{MONTHS})[a-z]*\.?(?:,?\s+\d{{4}})?\b"
+    rf"|\b(?:{MONTHS})[a-z]*\.?\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,?\s+\d{{4}})?\b"
+    r"|\b(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b", re.I)
 ALERT_RISK = 0.5  # predicted late probability at despatch that triggers an alert
 
 
@@ -87,21 +100,53 @@ def outcome_for(delivery_id: str) -> dict:
     return {"late": bool(row.late), "days_late": int(row.days_late), "delivered_date": row.delivered_date}
 
 
+def _dates_in(text: str, year: int) -> list[tuple[str, object]]:
+    """Every date-like phrase in the text, parsed when possible (a weekday stays a weekday name)."""
+    out = []
+    for m in DATE_ANY.finditer(text):
+        raw = m.group(0)
+        t = re.sub(r"(st|nd|rd|th)\b", "", raw, flags=re.I).replace(",", "").replace(".", "").strip()
+        val = None
+        if re.fullmatch(r"[A-Za-z]+day", t):
+            val = t.lower()
+        else:
+            if not re.search(r"\b\d{4}\b|/\d{2,4}$", t):
+                t = f"{t}/{year}" if "/" in t else f"{t} {year}"  # no year written: the promised date's year
+            for f in ("%Y-%m-%d", "%m/%d/%Y", "%m/%d/%y", "%d %B %Y", "%d %b %Y", "%B %d %Y", "%b %d %Y"):
+                try:
+                    val = datetime.strptime(t, f).date()
+                    break
+                except ValueError:
+                    continue
+        out.append((raw, val))
+    return out
+
+
 def check_alert(alert: Alert, facts: dict) -> dict:
+    """Deterministic checks on subject AND body. Anything named (date, action, carrier, warehouse, cause) must be in the facts."""
     text = f"{alert.subject}\n{alert.body}"
     backing = f"{facts['action']} {facts['causes']}".lower()
-    allowed_dates = {facts["promised_date"], facts["new_estimate"], *DATE.findall(facts.get("next_update", ""))}
-    bad_dates = sorted(set(DATE.findall(text)) - allowed_dates)
-    unbacked = sorted({m.group(0).lower() for m in ACTION_CLAIM.finditer(alert.body) if m.group(0).lower() not in backing})
-    names = sorted({n for n in NAMED.findall(text) if n not in facts["action"]})
+    promised = pd.Timestamp(facts["promised_date"]).date()
+    allowed = {promised} | {pd.Timestamp(x).date() for x in DATE.findall(facts.get("next_update", "") + " " + str(facts.get("new_estimate")))}
+    allowed_days = {d.strftime("%A").lower() for d in allowed}
+    bad_dates = sorted({raw for raw, val in _dates_in(text, promised.year)
+                        if val is None or (isinstance(val, str) and val not in allowed_days) or (not isinstance(val, str) and val not in allowed)})
+    unbacked = sorted({m.group(0).lower() for m in ACTION_CLAIM.finditer(text) if m.group(0).lower() not in backing})
+    wh = load_dataset().warehouses.set_index("warehouse_id").warehouse_name.to_dict()
+    ok_names = backing + " " + " ".join(f"{w} {n}".lower() for w, n in wh.items() if w.lower() in backing)
+    names = sorted({(f"Carrier {m.group(1).upper()}" if m.group(1) else m.group(2)) for m in CARRIER_NAME.finditer(text)
+                    if (f"carrier {m.group(1).lower()}" if m.group(1) else m.group(2).lower()) not in backing}
+                   | {m.group(0) for m in WAREHOUSE_NAME.finditer(text) if (m.group(1) or m.group(2)).lower() not in ok_names})
+    causes = sorted({m.group(0).lower() for m in CAUSE_CLAIM.finditer(text) if m.group(0).lower() not in backing})
     words = len(alert.body.split())
-    passed = (not BANNED.search(text) and not bad_dates and not unbacked and not names and words <= 80
+    passed = (not BANNED.search(text) and not bad_dates and not unbacked and not names and not causes and words <= 80
               and facts["order_ref"] in alert.subject)
     return {
         "banned_terms": sorted({m.group(0).lower() for m in BANNED.finditer(text)}),
         "dates_not_in_facts": bad_dates,
         "actions_not_in_facts": unbacked,
         "names_not_in_facts": names,
+        "causes_not_in_facts": causes,
         "word_count": words, "within_80_words": words <= 80,
         "has_order_ref": facts["order_ref"] in alert.subject,
         "passed": passed,

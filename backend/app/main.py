@@ -112,7 +112,10 @@ def simulate(req: SimulateRequest) -> dict:
     unknown = set(req.fixes) - set(analytics.LEVERS)
     if unknown:
         raise HTTPException(400, f"unknown drivers: {sorted(unknown)}")
-    return analytics.simulate(req.fixes, req.route_cut)
+    try:
+        return analytics.simulate(req.fixes, req.route_cut)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 # ---------------- Slice 2: LLM agents ----------------
@@ -134,19 +137,25 @@ _HITS: dict[str, deque] = defaultdict(deque)
 _HITS_LOCK = threading.Lock()
 
 
-def paid(request: Request) -> None:
-    """Guard for endpoints that call a paid model: API key (when configured) + per-IP rate limit."""
-    if settings.api_key and request.headers.get("x-api-key") != settings.api_key:
-        raise HTTPException(401, "missing or wrong X-API-Key")
-    ip = request.client.host if request.client else "unknown"
+def _take(bucket: str, limit: int, window_s: float) -> None:
     now = time.time()
     with _HITS_LOCK:
-        q = _HITS[ip]
-        while q and now - q[0] > 60:
+        q = _HITS[bucket]
+        while q and now - q[0] > window_s:
             q.popleft()
-        if len(q) >= settings.rate_limit_per_min:
-            raise HTTPException(429, "rate limit: too many model calls, try again in a minute")
+        if len(q) >= limit:
+            raise HTTPException(429, f"rate limit reached for {bucket}: try again later")
         q.append(now)
+
+
+def paid(request: Request) -> None:
+    """Guard for endpoints that call a paid model: API key, then a shared spend cap.
+    Behind the dashboard's proxy every caller shares one address, so the cap is global by design."""
+    if settings.require_api_key and not settings.api_key:
+        raise HTTPException(503, "model calls are disabled: OTD_API_KEY is not configured on this deployment")
+    if settings.api_key and request.headers.get("x-api-key") != settings.api_key:
+        raise HTTPException(401, "missing or wrong X-API-Key")
+    _take("model calls", settings.rate_limit_per_min, 60)
 
 
 @app.get("/api/llm/status")
@@ -274,6 +283,7 @@ def _run_job(job_id: str, limit: int, alerts: int, only: str | None) -> None:
 def evals_run(limit: int = Query(300, ge=5, le=300), alerts: int = Query(20, ge=1, le=50),
               only: str | None = Query(None, pattern="^(intake|alerts|evidence)$"), _: None = Depends(paid)) -> dict:
     """Starts the eval suite in the background (a full run takes minutes) and returns a job to poll."""
+    _take("eval runs", settings.eval_runs_per_hour, 3600)
     with _JOB_LOCK:
         running = next((j for j in _JOBS.values() if j["status"] == "running"), None)
         if running:

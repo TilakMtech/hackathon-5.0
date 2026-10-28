@@ -5,6 +5,7 @@ The LLM agents (next slice) only read these results; they never compute figures.
 """
 from __future__ import annotations
 
+import math
 from functools import lru_cache
 from itertools import product
 
@@ -67,10 +68,13 @@ def holdout() -> dict:
     This tests prediction on unseen months. It does not prove what an intervention would do: that needs a pilot."""
     from .data import apply_lanes, bad_lane_set
     d = load_dataset().deliveries
-    is_train = d.order_received_ts < pd.Timestamp(HOLDOUT_SPLIT)
+    split = pd.Timestamp(HOLDOUT_SPLIT)
+    is_test = d.order_received_ts >= split
+    # train only on deliveries whose outcome was known before the split, so nothing after it leaks in
+    is_train = (d.order_received_ts < split) & (pd.to_datetime(d.delivered_date) < split)
     bad = bad_lane_set(d[is_train])
     dd = apply_lanes(d, bad)
-    train, test = dd[is_train], dd[~is_train].copy()
+    train, test = dd[is_train], dd[is_test].copy()
     m = smf.logit(FORMULA, train).fit(disp=0)
     test["risk"] = m.predict(test)
     test["decile"] = pd.qcut(test.risk.rank(method="first"), 10, labels=False)
@@ -264,7 +268,10 @@ def simulate(fixes: dict[str, float], route_cut: float = 0.0) -> dict:
     patterns M of P(M) x mean(prediction with M zeroed), weighted by group size.
     """
     d = load_dataset().deliveries
-    f = {k: min(max(float(fixes.get(k, 0.0)), 0.0), 1.0) for k in LEVERS}
+    raw = {k: float(fixes.get(k, 0.0)) for k in LEVERS}
+    if not all(math.isfinite(v) for v in [*raw.values(), float(route_cut)]):
+        raise ValueError("fixes and route_cut must be finite numbers")
+    f = {k: min(max(v, 0.0), 1.0) for k, v in raw.items()}
     route_cut = round(float(route_cut), 4)
     expected_late, total = 0.0, len(d)
     for email in (True, False):
@@ -320,9 +327,10 @@ def bridge() -> dict:
     steps = [{"step": "routing", "label": "Routing 20% shorter",
               "delta": _r(simulate({}, route_cut=0.2)["otd_expected"] - today)}]
     for k in sorted([k for k in LEVERS if full[k]], key=lambda k: -only(k)):
-        steps.append({"step": k, "label": next(x["fix"] for x in DRIVERS if x["key"] == k), "delta": _r(only(k) - today)})
+        label = "Email intake agent (email orders)" if k == "drv_address" else next(x["fix"] for x in DRIVERS if x["key"] == k)
+        steps.append({"step": k, "label": label, "delta": _r(only(k) - today)})
     all_fixed = simulate(full)["otd_expected"]
-    overlap = all_fixed - today - sum(s["delta"] for s in steps)
+    overlap = all_fixed - today - sum(s["delta"] for s in steps if s["step"] != "routing")
     steps.append({"step": "overlap", "label": "Overlap between fixes", "delta": _r(overlap)})
     return {"today": _r(today), "all_fixed": _r(all_fixed), "steps": steps,
             "scope": "each fix at 100% of the orders it can reach (email-only address fix; second wave at "

@@ -54,3 +54,5 @@ stages:
           - publish: backend/reports/evals
             artifact: eval-reports
             condition: always()
+  # A deploy stage (azd deploy) must declare `dependsOn: release_gate`, so a failed gate stops the release.
+  # It is not added yet: until it is, this gate reports a regression on main but has nothing to block.

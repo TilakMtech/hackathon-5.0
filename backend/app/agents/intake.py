@@ -24,43 +24,79 @@ INJECTION_PATTERNS = re.compile(
 
 
 SKU_RE = re.compile(r"SKU-\d{5}", re.I)
-QTY_WINDOW = 20  # characters either side of a SKU, never past the neighbouring SKU
+# where an email stops being the order: forwarded or quoted mail, a signature, a legal footer
+BLOCK_END = re.compile(r"^\s*(?:-{2,}.*|>.*|From:.*|On .+ wrote:.*|.*\bconfidential\b.*)$", re.I | re.M)
+# a quantity written right after its SKU: "x 120", ": 24 pcs", " - 50", "*QTY*200", " (10)", ",10", "| 10 |", "qty50"
+QTY_AFTER = re.compile(r"^(?:\s|[:|*,(=\-–×]|x(?=\s*\d)|qty|quantity)*?(\d[\d,]*)(?!\d)", re.I)
+# ... or right before it: "50 x SKU", "40x SKU", "250 units of SKU", "120 of SKU"
+QTY_BEFORE = re.compile(r"(?<![\d.])(\d[\d,]*)\s*(?:x|×|units? of|units?|pcs of|pcs|of)?\s*$", re.I)
+SEPARATOR = re.compile(r"[;|,\n]|\band\b", re.I)
+SERVICE_WORDS = {
+    "same_day": re.compile(r"same[\s_-]?day|today", re.I),
+    "next_day": re.compile(r"next[\s_-]?day|tomorrow|overnight", re.I),
+    "standard": re.compile(r"standard|no rush", re.I),
+}
+DATE_FORMATS = ["%Y-%m-%d", "%d %b %Y", "%d %B %Y", "%m/%d/%Y", "%B %d, %Y", "%b %d, %Y", "%Y%m%d"]
 
 
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip().lower()
 
 
-def qty_written_next_to_sku(email_body: str, sku: str, qty: int) -> bool:
-    """The quantity must be written beside ITS SKU, not anywhere in the email (a 4,999 in a PO number is not a quantity)."""
-    ms = list(SKU_RE.finditer(email_body))
-    for i, m in enumerate(ms):
+def order_part(email_body: str) -> str:
+    """The part of the email that is the order: everything before a forwarded block, signature or legal footer."""
+    m = BLOCK_END.search(email_body)
+    return email_body[:m.start()] if m else email_body
+
+
+def written_qty(email_body: str, sku: str) -> list[int]:
+    """Quantities written beside each mention of this SKU, read with the layout's own patterns."""
+    out = []
+    for m in SKU_RE.finditer(email_body):
         if m.group(0).upper() != sku.upper():
             continue
-        line_lo = email_body.rfind("\n", 0, m.start()) + 1  # same line only: the next line's quantity is not this SKU's
-        line_hi = email_body.find("\n", m.end()) % (len(email_body) + 1)
-        lo = max(ms[i - 1].end() if i else 0, m.start() - QTY_WINDOW, line_lo)
-        hi = min(ms[i + 1].start() if i + 1 < len(ms) else len(email_body), m.end() + QTY_WINDOW, line_hi)
-        if re.search(rf"(?<![\d.]){qty}(?!\d)(?!\.\d)", email_body[lo:m.start()] + " " + email_body[m.end():hi]):
-            return True
-    return False
+        line_end = email_body.find("\n", m.end()) % (len(email_body) + 1)
+        nxt = SKU_RE.search(email_body, m.end(), line_end)
+        after = email_body[m.end():nxt.start() if nxt else line_end]
+        a = QTY_AFTER.match(after)
+        line_start = email_body.rfind("\n", 0, m.start()) + 1
+        before = email_body[line_start:m.start()]
+        cut = [x.end() for x in SEPARATOR.finditer(before)] + [x.end() for x in SKU_RE.finditer(before)]
+        b = QTY_BEFORE.search(before[max(cut, default=0):])
+        out += [int(g.group(1).replace(",", "")) for g in (a, b) if g]
+    return out
+
+
+def qty_written_next_to_sku(email_body: str, sku: str, qty: int) -> bool:
+    return qty in written_qty(email_body, sku)
+
+
+def _parse_date(text: str):
+    for m in re.finditer(r"\d{4}-\d{2}-\d{2}|\d{8}|\d{1,2}/\d{1,2}/\d{4}|\d{1,2} [A-Za-z]+ \d{4}|[A-Za-z]+ \d{1,2}, \d{4}", text):
+        for f in DATE_FORMATS:
+            try:
+                return datetime.strptime(m.group(0), f).date()
+            except ValueError:
+                continue
+    return None
 
 
 def guardrails(email_body: str, default_address: str, x: Extraction, received_at: str) -> dict:
     """Checks the model cannot talk its way around."""
-    body = _norm(email_body)
+    order = order_part(email_body)  # forwarded mail, signatures and legal footers are not the order
+    order_n = _norm(order)
     flags: list[str] = []
 
-    # 1. every evidence quote must exist verbatim in the email
-    ungrounded = [k for k, q in x.evidence.items() if q and _norm(q) not in body]
+    # 1. every evidence quote must exist verbatim in the order part of the email
+    ungrounded = [k for k, q in x.evidence.items() if q and _norm(q) not in order_n]
     if ungrounded:
-        flags.append(f"evidence not found in email for: {', '.join(ungrounded)}")
+        flags.append(f"evidence not found in the order part of the email for: {', '.join(ungrounded)}")
 
-    # 2. address values must appear in the email (blocks values copied from the address on file)
+    # 2. address values must appear in the order part (blocks the address on file and office addresses in footers)
     addr = x.delivery_address.model_dump()
-    invented = [k for k, v in addr.items() if v and _norm(v) not in body]
+    invented = [k for k, v in addr.items() if v and _norm(v) not in order_n]
     if invented:
-        flags.append(f"address value not in email: {', '.join(invented)}")
+        flags.append(f"address value not in the order part of the email: {', '.join(invented)}")
     missing = sorted(set(x.missing_fields) | {k for k in REQUIRED if not addr.get(k)} | set(invented))
 
     # 3. ZIP code vs state sanity
@@ -70,36 +106,57 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
 
     # 3b. a postcode is written right after the state but was not extracted
     if st and not pc:
-        m = re.search(rf"\b{re.escape(st)}\s+(\d{{5}})\b", email_body, re.I)
+        m = re.search(rf"\b{re.escape(st)}\s+(\d{{5}})\b", order, re.I)
         if m:
             flags.append(f"postcode {m.group(1)} appears after {st} in the email but was not extracted")
 
-    # 4. quantities and SKUs must be plausible, present, and paired the way the email pairs them
+    # 4. order lines: exactly the SKUs of the order part, each once, each quantity written beside its own SKU
+    written = {m.upper() for m in SKU_RE.findall(order)}
+    got = [li.sku.upper() for li in x.order_lines]
+    if len(got) != len(set(got)):
+        flags.append("a SKU appears on more than one order line")
+    if set(got) - written:
+        flags.append(f"not in the order part of the email: {', '.join(sorted(set(got) - written))}")
+    if written - set(got):
+        flags.append(f"SKUs in the email but not extracted: {', '.join(sorted(written - set(got)))}")
     for line in x.order_lines:
         if line.qty > 5000:
             flags.append(f"quantity {line.qty} for {line.sku} is implausible")
-        if _norm(line.sku) not in body:
-            flags.append(f"{line.sku} not found in email")
-        elif not qty_written_next_to_sku(email_body, line.sku, line.qty):
+        if line.sku.upper() in written and not qty_written_next_to_sku(order, line.sku, line.qty):
             flags.append(f"quantity {line.qty} is not written next to {line.sku} in the email")
     if not x.order_lines:
         flags.append("no order lines found")
 
-    # 4b. every consequential field needs its quote (checked verbatim in 1); without one, a person decides
+    # 4b. every consequential field needs its quote, and the quote must say what the field says
     need = ["order_lines"] + (["commitment_type"] if x.commitment_type != "unknown" else []) \
         + (["requested_date"] if x.requested_date else [])
     no_quote = [k for k in need if not (x.evidence.get(k) or "").strip()]
     if no_quote:
         flags.append(f"no evidence quote for: {', '.join(no_quote)}")
-
-    # 4c. an order we cannot schedule is not auto-accepted
+    received = datetime.fromisoformat(received_at)
+    q_service = x.evidence.get("commitment_type") or ""
     if x.commitment_type == "unknown":
         flags.append("service level not stated")
+    elif q_service:
+        says = {k for k, rx in SERVICE_WORDS.items() if rx.search(q_service)}
+        if x.commitment_type == "standard" and not says:
+            d = _parse_date(q_service)
+            says = {"standard"} if d and (d - received.date()).days >= 3 else set()
+        if says != {x.commitment_type}:
+            flags.append(f"service quote {q_service!r} does not say {x.commitment_type}")
+
+    # 4c. the requested date must be a real date, read from its quote, and not before the order arrived
     if x.requested_date:
         try:
-            datetime.strptime(x.requested_date, "%Y-%m-%d")
+            req = datetime.strptime(x.requested_date, "%Y-%m-%d").date()
         except ValueError:
+            req = None
             flags.append(f"requested date {x.requested_date!r} is not a valid date")
+        q_date = x.evidence.get("requested_date") or ""
+        if req and q_date and _parse_date(q_date) != req:
+            flags.append(f"requested date {x.requested_date} is not what its quote {q_date!r} says")
+        if req and req < received.date():
+            flags.append(f"requested date {x.requested_date} is before the order arrived")
 
     # 5. prompt-injection text present (independent of whether the model noticed)
     injection = bool(INJECTION_PATTERNS.search(email_body))
@@ -109,7 +166,6 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
         flags.append("model flagged suspicious instructions in the email")
 
     # 6. operational risk from the root-cause analysis
-    received = datetime.fromisoformat(received_at)
     risks = []
     if missing:
         risks.append("Incomplete address: 65% of such orders arrive late")

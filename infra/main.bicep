@@ -133,6 +133,7 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
             { name: 'OTD_CORS_ORIGINS', value: '*' }
             { name: 'APPLICATIONINSIGHTS_CONNECTION_STRING', value: appInsights.properties.ConnectionString }
             { name: 'OTD_LLM_PROVIDER', value: llmProvider }
+            { name: 'OTD_REQUIRE_API_KEY', value: llmProvider == 'mock' ? 'false' : 'true' }  // public dashboard: no key, no model calls
             { name: 'ANTHROPIC_FOUNDRY_RESOURCE', value: foundryResource }
             { name: 'OTD_AOAI_BASE_URL', value: empty(foundryResource) ? '' : 'https://${foundryResource}.openai.azure.com/openai/v1' }
           ], llmKeyEnv)

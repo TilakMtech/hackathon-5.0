@@ -40,8 +40,10 @@ class Settings(BaseSettings):
     sql_row_limit: int = 200
 
     # Endpoints that spend money on model calls (intake, alerts, ask, eval runs)
-    api_key: str = ""            # when set, those endpoints need header X-API-Key; set it whenever the API is public
-    rate_limit_per_min: int = 30  # per client IP, on those endpoints
+    api_key: str = ""             # when set, those endpoints need header X-API-Key
+    require_api_key: bool = False  # deployment sets true: with no key configured, model calls are refused (503)
+    rate_limit_per_min: int = 30   # model-calling requests per minute, all callers together: a spend cap, not per user
+    eval_runs_per_hour: int = 3    # an eval run makes ~400 model calls, so it has its own budget
 
     # Leadership targets
     otd_target: float = 0.85     # team proposal to confirm with the sponsor: reach it within 90 days of starting wave 1
