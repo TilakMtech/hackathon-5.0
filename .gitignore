@@ -8,3 +8,6 @@ __pycache__/
 .venv/
 backend/reports/
 backend/logs/
+
+# macOS
+.DS_Store
