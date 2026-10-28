@@ -212,8 +212,13 @@ def check_alert(alert: Alert, facts: dict) -> dict:
     unsupported = sorted({w.lower() for w in _words(text) if len(w) > 1 and _stem(w) not in allowed_stems
                           and w != facts["order_ref"] and not re.fullmatch(r"ORD|W\d|AM|PM", w, re.I)})
     # promises to deliver/dispatch/arrive: only the verb the action itself uses
-    promises = sorted({m.group(0).lower() for m in PROMISE.finditer(text)
-                       if _stem(m.group(1).split()[0]) not in {_stem(w) for w in _words(facts["action"])}})
+    # the action is a FIXED sentence: it must appear word for word, so its conditions survive ("will dispatch as
+    # soon as it is confirmed" cannot shrink to "will dispatch your order"). Promises anywhere else are not allowed.
+    norm = lambda t: re.sub(r"\s+", " ", t).strip().lower()  # noqa: E731
+    action_n = norm(facts["action"])
+    action_verbatim = action_n in norm(text)
+    outside_action = re.sub(re.escape(action_n), " ", norm(text)) if action_verbatim else norm(text)
+    promises = sorted({m.group(0).lower() for m in PROMISE.finditer(outside_action)})
     # times: only in a next-update sentence, and only the facts' own time; or a time the action states
     update_times = {t.lower() for t in TIME_WORD.findall(facts.get("next_update", ""))} | {"12:00", "noon", "midday", "12 pm", "12pm"}
     times = []
@@ -233,7 +238,7 @@ def check_alert(alert: Alert, facts: dict) -> dict:
                         if m.group(0).lower() not in fact_low.split()})
     words = len(alert.body.split())
     passed = (not BANNED.search(text) and not bad_dates and not unbacked and not names and not causes and not status
-              and not unsupported and not promises and not times and not numbers and not negations
+              and action_verbatim and not unsupported and not promises and not times and not numbers and not negations
               and words <= 80 and facts["order_ref"] in alert.subject)
     return {
         "banned_terms": sorted({m.group(0).lower() for m in BANNED.finditer(text)}),
@@ -243,6 +248,7 @@ def check_alert(alert: Alert, facts: dict) -> dict:
         "causes_not_in_facts": causes,
         "status_claims_not_in_facts": status,
         "words_not_in_facts": unsupported,  # allowlist: content words neither in the facts nor in the neutral set
+        "action_verbatim": action_verbatim,
         "promises_not_in_facts": promises,
         "times_not_in_facts": times,
         "numbers_not_in_facts": numbers,

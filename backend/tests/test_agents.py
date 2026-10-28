@@ -58,7 +58,8 @@ def test_alert_checks_catch_liability_and_invented_dates():
     bad = Alert(subject="Order ORD-1", body="We will pay a penalty and deliver on 2026-10-20.")
     c = check_alert(bad, facts)
     assert not c["passed"] and c["dates_not_in_facts"] == ["2026-10-20"] and c["banned_terms"]
-    ok = Alert(subject="Update on ORD-1", body="Your order ORD-1 may miss 2026-10-14. We are moving it to Carrier B. Next update by 12:00 on 2026-10-15.")
+    ok = Alert(subject="Update on ORD-1", body="Your order ORD-1 may miss 2026-10-14, so we are moving it to Carrier B, which serves your region reliably. "
+                                                  "Next update by 12:00 on 2026-10-15.")
     assert check_alert(ok, facts)["passed"]
     # audit repro: an invented remedy used to pass; now it is named and blocked
     invented = Alert(subject="Update on ORD-1", body="We have rerouted your order by drone, upgraded you to priority, via Carrier E.")
@@ -283,7 +284,7 @@ def test_reviewer_repros_invented_alert_claims_are_blocked():
              "causes": "the item was not in stock at the warehouse nearest to you",
              "action": "we are shipping it from our W4 warehouse instead"}
     body = "Your order ORD-1, due 2026-10-14, may be late: the item was not in stock at the warehouse nearest to you, so we are shipping it from our {} "
-    ok = Alert(subject="Update on order ORD-1", body=body.format("Northeast warehouse (W4) instead. Next update tomorrow by 12:00."))
+    ok = Alert(subject="Update on order ORD-1", body=body.format("W4 warehouse instead. Our Northeast warehouse is W4. Next update tomorrow by 12:00."))
     assert check_alert(ok, facts)["passed"], check_alert(ok, facts)
     bad = {
         "subject claim": Alert(subject="ORD-1 rerouted by drone", body=body.format("W4 warehouse.")),
@@ -327,7 +328,8 @@ def test_run7_everyday_words_pass_and_the_next_carrier_is_traced():
          "causes": "the delivery address was incomplete; the item was out of stock at your nearest warehouse",
          "action": "we have asked your team to confirm the full address and will dispatch as soon as it is confirmed"}
     a = Alert(subject="Delay notice: order ORD-9", body="Your order ORD-9, due 2026-09-15, is at risk: the address was incomplete and "
-              "the item was out of stock at your nearest warehouse. We have asked your team to confirm the address. "
+              "the item was out of stock at your nearest warehouse. We have asked your team to confirm the full address and will "
+              "dispatch as soon as it is confirmed. "
               "Next update by 12:00 on 2026-09-16. Please feel free to contact your Halcyon account director.")
     assert check_alert(a, f)["passed"], check_alert(a, f)
     from app.agents.schemas import EvidenceAnswer
@@ -461,3 +463,31 @@ def test_review3_grounding_metric_words_rate_columns_totals_and_respectively():
                       ("Client 033 had 40 late deliveries.", t3),
                       ("Carrier D's on-time rate is just 60.5%, against 75.3% for Carrier B.", t1)]:
         assert ok(right, tr), right
+
+
+
+def test_round4_action_must_be_verbatim_so_its_condition_survives_and_counts_bind_to_their_metric():
+    f = {"promised_date": "2026-09-15", "new_estimate": "none", "order_ref": "ORD-9", "next_update": "by 12:00 on 2026-09-16",
+         "causes": "the delivery address was incomplete", "client_name": "Client 049", "tier": "Tier 1",
+         "account_owner": "your Halcyon account director",
+         "action": "we have asked your team to confirm the full address and will dispatch as soon as it is confirmed"}
+    head = "Order ORD-9, due 2026-09-15, is at risk of arriving late because the delivery address was incomplete. "
+    tail = " We will send a further update by 12:00 on 2026-09-16."
+    full = Alert(subject="Update on order ORD-9", body=head + "We have asked your team to confirm the full address and will "
+                 "dispatch as soon as it is confirmed." + tail)
+    assert check_alert(full, f)["passed"]
+    dropped = Alert(subject="Update on order ORD-9", body=head + "We have asked your team to confirm the address. We will dispatch your order." + tail)
+    c = check_alert(dropped, f)
+    assert not c["passed"] and not c["action_verbatim"] and "will dispatch" in c["promises_not_in_facts"]
+
+    from app.agents.schemas import EvidenceAnswer as A
+    t = [{"output": {"columns": ["carrier_id", "deliveries", "late_deliveries", "late_rate"], "rows": [["D", 8928, 3525, 0.3948]]}}]
+
+    def ok(x):
+        return evidence.grounding(A(answer=x, answerable=True), t)["grounded"]
+
+    assert not ok("Carrier D had 3,525 total deliveries.") and not ok("Carrier D had 3,525 deliveries.")
+    assert not ok("Carrier D had 8,928 late deliveries.")
+    assert ok("Carrier D had 8,928 total deliveries.") and ok("Carrier D had 3,525 late deliveries.")
+    assert ok("Carrier D: 39.5% late (3,525 of 8,928 deliveries).")
+    assert ok("Carrier D handled a total of 8,928 deliveries, 3,525 of them late.")

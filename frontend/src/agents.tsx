@@ -246,7 +246,7 @@ export function AskPage() {
         <section className="card">
           <div className={`decision ${res.status === 'declined' ? 'warn' : res.status === 'verified' ? 'good' : 'bad'}`}>
             <b>{res.status === 'declined' ? 'Declined: not in the data' : res.status === 'verified' ? 'Numbers traced to query rows' : 'Unverified: do not use these numbers'}</b>
-            {res.grounding && <> · {res.grounding.numbers_in_answer} numbers · {res.grounding.untraced_numbers.length + res.grounding.untraced_figures.length} untraced · {res.grounding.wrong_entity_numbers.length} on the wrong row{res.grounding.no_query_result ? ' · no query result' : ''}</>}
+            {res.grounding && <> · {res.grounding.numbers_in_answer} numbers · {res.grounding.untraced_numbers.length + res.grounding.untraced_figures.length} untraced · {res.grounding.wrong_entity_numbers.length} on the wrong row or metric{res.grounding.no_query_result ? ' · no query result' : ''}</>}
             {res.repaired && <> · re-asked once after a failed check</>}
           </div>
           <div className="muted small">Traced means each number appears in a result row for the carrier, client, region or tier it is stated for. It is not a proof the answer is right; answer accuracy is measured against gold SQL on the Prompt quality tab.</div>

@@ -170,6 +170,8 @@ def _col_kind(name: str) -> str | None:
         return "ontime"
     if "late" in n or "delay" in n:
         return "late"
+    if re.search(r"deliveries|orders|shipments|total|count|volume|\bn\b", n):
+        return "total"  # an all-deliveries count, as opposed to a late count
     return None
 
 
@@ -198,7 +200,20 @@ def _fig_kinds(text: str) -> dict[int, str]:
             d = abs(f - m.start())
             if d <= METRIC_REACH and (f not in best or d < best[f][0]):
                 best[f] = (d, kind)
-    return {f: k for f, (_, k) in best.items()}
+    kinds = {f: k for f, (_, k) in best.items()}
+    # a COUNT with no late/on-time word is a count of all deliveries ("3,525 total deliveries", "8,928 deliveries"),
+    # except the part in "3,525 of 8,928 deliveries", which is a subset of unknown metric
+    for _, _, f in _figures_at(text):
+        if f in kinds or _fig_unit(text, f) != "raw":
+            continue
+        m = FIGURE.match(_blank(text), f)
+        after = text[m.end():] if m else ""
+        if re.match(r"\s*of\s+\d", after):
+            continue
+        if re.match(r"\s*(?:total\s+)?(?:deliveries|orders|shipments)\b|\s*in total\b", after, re.I) or \
+                re.search(r"\btotal(?: of)?\s*$|\ball\s*$", text[max(0, f - 12):f], re.I):
+            kinds[f] = "total"
+    return kinds
 
 
 ALL_ROWS = "__all_rows__"  # a column total belongs to no single entity
