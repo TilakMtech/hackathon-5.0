@@ -27,9 +27,19 @@ SKU_RE = re.compile(r"SKU-\d{5}", re.I)
 # where an email stops being the order: forwarded or quoted mail, a signature, a legal footer
 BLOCK_END = re.compile(r"^\s*(?:-{2,}.*|>.*|From:.*|On .+ wrote:.*|.*\bconfidential\b.*)$", re.I | re.M)
 # a quantity written right after its SKU: "x 120", ": 24 pcs", " - 50", "*QTY*200", " (10)", ",10", "| 10 |", "qty50"
-QTY_AFTER = re.compile(r"^(?:\s|[:|*,(=\-–×]|x(?=\s*\d)|qty|quantity)*?(\d[\d,]*)(?!\d)", re.I)
+QTY_AFTER = re.compile(r"^(?:\s|[:|*,(=\-–×]|x(?=\s*\d)|qty|quantity)*?(\d[\d,]*(?:\.\d+)?)(?!\d)", re.I)
 # ... or right before it: "50 x SKU", "40x SKU", "250 units of SKU", "120 of SKU"
-QTY_BEFORE = re.compile(r"(?<![\d.])(\d[\d,]*)\s*(?:x|×|units? of|units?|pcs of|pcs|of)?\s*$", re.I)
+QTY_BEFORE = re.compile(r"(?<![\d.])(\d[\d,]*(?:\.\d+)?)\s*(?:x|×|units? of|units?|pcs of|pcs|of)?\s*$", re.I)
+# the client changing their mind inside the email: a person decides which quantity stands
+CORRECTION = re.compile(r"\b(correct(?:ed|ion|ing)|amend\w*|revis\w*|instead of|change[ds]? (?:the |that |it |qty|quantity|to)|"
+                        r"make (?:it|that) \d|scratch that|i meant|meant to|should (?:be|have been|read)|typo|oops|no wait|"
+                        r"double it|halve it|by mistake|was wrong|\d+ more\b|more of the same|additional|extra|on top of|"
+                        r"update[ds]? (?:the )?(?:qty|quantity|quantities))\b", re.I)
+# numbers that are labels, not quantities: "PO 4471", "Line 1", "#12", "Ref 99", "Client 128", "1." list numbering
+LABEL_NUMBER = re.compile(r"\b(?:po|p\.o\.|ref|order|line|item|no\.?|client|invoice|account)\s*[#:.]?\s*\d+|#\s*\d+|^\s*\d+[.)](?=\s)",
+                          re.I | re.M)
+DATE_TEXT = re.compile(r"\d{4}-\d{2}-\d{2}|\b\d{8}\b|\d{1,2}/\d{1,2}/\d{2,4}|\b\d{1,2}(?:st|nd|rd|th)? [A-Za-z]{3,9}\.? \d{4}|"
+                       r"[A-Za-z]{3,9}\.? \d{1,2}(?:st|nd|rd|th)?,? \d{4}|\b\d{1,2}:\d{2}\b|\b\d{1,2}\s?(?:am|pm)\b", re.I)
 SEPARATOR = re.compile(r"[;|,\n]|\band\b", re.I)
 SERVICE_WORDS = {
     "same_day": re.compile(r"same[\s_-]?day|today", re.I),
@@ -62,13 +72,17 @@ def written_qty(email_body: str, sku: str) -> list[int]:
         line_start = email_body.rfind("\n", 0, m.start()) + 1
         before = email_body[line_start:m.start()]
         cut = [x.end() for x in SEPARATOR.finditer(before)] + [x.end() for x in SKU_RE.finditer(before)]
-        b = QTY_BEFORE.search(before[max(cut, default=0):])
-        out += [int(g.group(1).replace(",", "")) for g in (a, b) if g]
+        seg = before[max(cut, default=0):]
+        b = QTY_BEFORE.search(seg)
+        if b and re.search(r"(?:line|item|po|p\.o\.|no\.?|#|ref)\s*[:#]?\s*$", seg[:b.start()], re.I):
+            b = None  # "Line 1 SKU-..." / "PO 4471 SKU-..." : a label, not a quantity
+        out += [float(g.group(1).replace(",", "")) for g in (a, b) if g]
     return out
 
 
 def qty_written_next_to_sku(email_body: str, sku: str, qty: int) -> bool:
-    return qty in written_qty(email_body, sku)
+    """True only if this exact whole number is written beside the SKU ("10.5" is not 10)."""
+    return float(qty) in written_qty(email_body, sku)
 
 
 def _parse_date(text: str):
@@ -119,6 +133,30 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
         flags.append(f"not in the order part of the email: {', '.join(sorted(set(got) - written))}")
     if written - set(got):
         flags.append(f"SKUs in the email but not extracted: {', '.join(sorted(written - set(got)))}")
+    # every number in the order must be accounted for: a quantity beside its SKU, the street number, the ZIP, a date,
+    # or a label (PO, line, client). Anything else ("I meant 20", "cases of 12", "for our 3 stores") goes to a person.
+    rest = LABEL_NUMBER.sub(" ", DATE_TEXT.sub(" ", SKU_RE.sub(" ", order)))
+    for v in (addr.get("line1"), addr.get("postcode")):
+        if v:
+            rest = re.sub(re.escape(v), " ", rest, flags=re.I)
+    qtys = {float(li.qty) for li in x.order_lines}
+    stray = sorted({n for n in re.findall(r"(?<![\w.])\d(?:[\d,]*\d)?(?:\.\d+)?", rest) if float(n.replace(",", "")) not in qtys})
+    if stray:
+        flags.append(f"numbers in the email that are not a quantity, address or date: {', '.join(stray)}")
+    if re.search(r"\b\d{1,3}\.\d{3}\b", order):
+        flags.append("a number like 1.000 could be a decimal or a thousands separator")
+    services = {k for k, rx in SERVICE_WORDS.items() if rx.search(order)}
+    if len(services) > 1:
+        flags.append(f"the email mentions more than one service level: {', '.join(sorted(services))}")
+    m = CORRECTION.search(order)
+    if m:
+        flags.append(f"the email changes or corrects itself ({m.group(0)!r}): a person checks the quantities")
+    for sku in written:
+        seen = set(written_qty(order, sku))
+        if len(seen) > 1:
+            flags.append(f"{sku} has more than one quantity in the email: {sorted(seen)}")
+        if any(q != int(q) for q in seen):
+            flags.append(f"{sku} has a fractional quantity in the email: {sorted(seen)}")
     for line in x.order_lines:
         if line.qty > 5000:
             flags.append(f"quantity {line.qty} for {line.sku} is implausible")

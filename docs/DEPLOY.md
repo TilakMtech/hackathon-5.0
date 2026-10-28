@@ -42,7 +42,7 @@ azd env set AZURE_LOCATION centralus
 azd up
 ```
 
-The API container is internal: only the dashboard reaches it. With a real model, the deployment refuses AI calls until `OTD_API_KEY` is set. The dashboard then shows a key field next to the AI badge. AI calls share a spend cap of 30 a minute, and eval runs are limited to 3 an hour, because each makes about 400 model calls. Analytics tabs stay open. This Bicep has not been deployed yet, so treat the first `azd up` as a test.
+The API container is internal: only the dashboard reaches it. With a real model, the deployment refuses AI calls until `OTD_API_KEY` is set. The dashboard then shows a key field next to the AI badge. AI calls share a spend cap of 30 a minute, and eval runs are limited to 3 an hour, because each makes about 400 model calls. Analytics tabs stay open. The API runs as a single replica, because eval jobs and the spend cap are held in that process; scaling out needs shared storage first. This Bicep has not been deployed yet, so treat the first `azd up` as a test.
 
 `azd up` takes about 8–12 minutes the first time. At the end it prints two URLs:
 

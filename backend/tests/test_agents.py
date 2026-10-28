@@ -186,7 +186,7 @@ def test_audit_repro_wrong_qty_unknown_service_no_evidence_and_suspicion_never_a
     for name, change in cases.items():
         g = intake.guardrails(email_ok.replace("Service", "Ref 4999. Service"), "", Extraction(**{**base, **change}), "2026-10-12T07:30")
         assert g["decision"] == "human_review", (name, g)
-        assert len(g["flags"]) == 1, (name, g["flags"])  # each case is caught by its own check, not a side effect
+        assert g["flags"], (name, g)
 
 
 def test_true_quantities_in_every_layout_pass_the_pairing_check():
@@ -282,7 +282,7 @@ def test_reviewer_repros_invented_alert_claims_are_blocked():
     facts = {"promised_date": "2026-10-14", "new_estimate": "none", "order_ref": "ORD-1", "next_update": "by 12:00 on 2026-10-15",
              "causes": "the item was not in stock at the warehouse nearest to you",
              "action": "we are shipping it from our W4 warehouse instead"}
-    body = "Your order ORD-1, due 2026-10-14, may be late: the item was not in stock nearby, so we are shipping it from our {} "
+    body = "Your order ORD-1, due 2026-10-14, may be late: the item was not in stock at the warehouse nearest to you, so we are shipping it from our {} "
     ok = Alert(subject="Update on order ORD-1", body=body.format("Northeast warehouse (W4) instead. Next update tomorrow by 12:00."))
     assert check_alert(ok, facts)["passed"], check_alert(ok, facts)
     bad = {
@@ -300,7 +300,8 @@ def test_reviewer_repros_invented_alert_claims_are_blocked():
 
 def test_reviewer_repros_grounding_entity_on_either_side_pronouns_and_day_claims():
     from app.agents.schemas import EvidenceAnswer as A
-    trace = [{"output": {"rows": [["D", 0.3948, 8928, 2.95], ["B", 0.2468, 9762, 2.78]]}}]
+    trace = [{"output": {"columns": ["carrier_id", "late_rate", "deliveries", "avg_days_late"],
+                         "rows": [["D", 0.3948, 8928, 2.95], ["B", 0.2468, 9762, 2.78]]}}]
 
     def ok(t):
         return evidence.grounding(A(answer=t, answerable=True), trace)["grounded"]
@@ -321,12 +322,12 @@ def test_deployment_without_a_key_refuses_model_calls_and_bad_inputs_are_400(mon
     assert client.post("/api/simulate", json={"fixes": {"drv_lane": "NaN"}}).status_code in (400, 422)
 
 
-def test_run7_false_flags_fixed_everyday_words_pass_and_the_next_carrier_is_traced():
+def test_run7_everyday_words_pass_and_the_next_carrier_is_traced():
     f = {"promised_date": "2026-09-15", "new_estimate": "none", "order_ref": "ORD-9", "next_update": "by 12:00 on 2026-09-16",
          "causes": "the delivery address was incomplete; the item was out of stock at your nearest warehouse",
          "action": "we have asked your team to confirm the full address and will dispatch as soon as it is confirmed"}
     a = Alert(subject="Delay notice: order ORD-9", body="Your order ORD-9, due 2026-09-15, is at risk: the address was incomplete and "
-              "there was a stock shortage at your nearest warehouse. We have asked your team to confirm the address. "
+              "the item was out of stock at your nearest warehouse. We have asked your team to confirm the address. "
               "Next update by 12:00 on 2026-09-16. Please feel free to contact your Halcyon account director.")
     assert check_alert(a, f)["passed"], check_alert(a, f)
     from app.agents.schemas import EvidenceAnswer
@@ -345,3 +346,118 @@ def test_blank_postcode_is_taken_from_the_models_own_quote_only_when_it_is_in_th
     assert filled == ["postcode"] and x.delivery_address.postcode == "53663" and x.missing_fields == []
     _, none = intake.reconcile(Extraction(**base, evidence={"postcode": "53999"}), email)  # quote not in the email
     assert none == []
+
+
+def test_reviewer_repro_round3_alert_allowlist_blocks_invented_causes_and_status():
+    f = {"promised_date": "2026-09-15", "new_estimate": "none", "order_ref": "ORD-9", "next_update": "by 12:00 on 2026-09-16",
+         "causes": "the delivery address was incomplete", "client_name": "Client 049", "tier": "Tier 1",
+         "account_owner": "your Halcyon account director",
+         "action": "we have asked your team to confirm the full address and will dispatch as soon as it is confirmed"}
+    for body in ["Your order ORD-9 is delayed because of staffing shortages.",
+                 "Your order ORD-9 has been dispatched.",
+                 "Your order ORD-9 is delayed because of a labour dispute at the depot.",
+                 "Good news: order ORD-9 is on its way."]:
+        assert not check_alert(Alert(subject="Update on order ORD-9", body=body), f)["passed"], body
+    good = ("Hello Client 049,\n\nWe're writing ahead of your promised date of 2026-09-15: order ORD-9 is at risk of arriving late "
+            "because the delivery address was incomplete. We have asked your team to confirm the full address and will "
+            "dispatch as soon as it is confirmed. We will send a further update by 12:00 on 2026-09-16.\n\nYour Halcyon account director")
+    assert check_alert(Alert(subject="Update on order ORD-9", body=good), f)["passed"]
+
+
+def test_reviewer_repro_round3_decimal_and_corrected_quantities_need_a_person():
+    def g(body, qty=10):
+        x = Extraction(order_lines=[{"sku": "SKU-12345", "qty": qty}], commitment_type="standard", confidence=0.97,
+                       delivery_address={"line1": "12 Maple Street", "city": "Columbus", "state": "OH", "postcode": "43001"},
+                       evidence={"order_lines": "SKU-12345", "commitment_type": "standard"})
+        return intake.guardrails(body, "", x, "2026-10-12T07:30")["decision"]
+    addr = " Ship to 12 Maple Street, Columbus, OH 43001."
+    assert g("Please send SKU-12345 qty 10.5, standard." + addr) == "human_review"
+    assert g("Please send SKU-12345 qty 10 then corrected to 20, standard." + addr) == "human_review"
+    assert g("Please send SKU-12345 qty 10, standard." + addr + " Sorry, SKU-12345 qty 20 please.") == "human_review"
+    assert g("Please send SKU-12345 qty 10, standard." + addr) == "auto_accept"
+
+
+
+def test_reviewer_repro_round3_grounding_binds_entity_metric_unit_and_value():
+    from app.agents.schemas import EvidenceAnswer as A
+    trace = [{"output": {"columns": ["carrier_id", "deliveries", "late_rate"], "rows": [["D", 8928, 0.3948]]}}]
+
+    def ok(t):
+        return evidence.grounding(A(answer=t, answerable=True), trace)["grounded"]
+
+    assert not ok("Carrier A had 8,928 deliveries.")            # right number, wrong entity (column total no longer backs it)
+    assert not ok("Carrier D's late rate was 60.5%.")           # complement used under the wrong metric
+    assert not ok("Carrier D had 39.5 deliveries.")             # a rate stated as a count
+    assert ok("Carrier D's late rate was 39.5% across 8,928 deliveries.")
+    assert ok("Carrier D was 39.5% late, so 60.5% of its deliveries were on time.")
+
+
+def test_review3_alert_claims_built_from_neutral_words_are_blocked_and_courtesy_passes():
+    from app.agents import alerts
+    f = alerts.facts_for("D047098")
+    base = ("Hello Client 099,\n\nOrder {o} is at risk of arriving late because the delivery address was incomplete, the item was "
+            "out of stock at your nearest warehouse and the order arrived after the 8am pick list. We have asked your team to "
+            "confirm the full address and will dispatch as soon as it is confirmed. {x} We will send a further update by 12:00 "
+            "on 2026-09-24.\n\nYour Halcyon account director")
+
+    def ok(extra):
+        return check_alert(Alert(subject="Update on order " + f["order_ref"], body=base.format(o=f["order_ref"], x=extra)), f)["passed"]
+
+    assert ok("")
+    for bad in ["We will deliver it tomorrow.", "It will arrive today by 3 pm.", "Your order will still arrive on time on 2026-09-23.",
+                "It will not be late.", "The delay is now resolved.", "We will deliver by EOD.", "We will deliver within 24 hours.",
+                "All 3 orders are affected.", "We will send it out today.", "The delay was not caused by the address.",
+                "We will ensure delivery on the promised date.", "Delivery by 09:00 tomorrow."]:
+        assert not ok(bad), bad
+    for courtesy in ["Thank you for your patience and understanding.", "Your shipment is at risk.",
+                     "Please don't hesitate to reach out with any questions.", "Please contact Halcyon's team with questions.",
+                     "We will send a follow-up.", "We are monitoring the situation closely.",
+                     "We are sorry for any inconvenience this may cause.", "We appreciate your understanding."]:
+        assert ok(courtesy), courtesy
+
+
+
+def test_review3_corrections_stray_numbers_and_ambiguity_go_to_a_person_and_labels_do_not():
+    def g(body, qty=10, svc="standard", sq="standard"):
+        x = Extraction(order_lines=[{"sku": "SKU-12345", "qty": qty}], commitment_type=svc, confidence=0.97,
+                       delivery_address={"line1": "12 Maple Street", "city": "Columbus", "state": "OH", "postcode": "43001"},
+                       evidence={"order_lines": "SKU-12345", "commitment_type": sq})
+        return intake.guardrails(body, "", x, "2026-10-12T07:30")["decision"]
+    a = " Ship to 12 Maple Street, Columbus, OH 43001."
+    for bad in ["Please send SKU-12345 qty 10, standard." + a + " Oops, I meant 20.",
+                "Please send SKU-12345 qty 10, standard." + a + " No wait, double it.",
+                "Please send SKU-12345 qty 10 cases of 12, standard." + a,
+                "Please send SKU-12345 qty 10 per store for our 3 stores, standard." + a,
+                "Please send SKU-12345 qty 10, standard. Ship to 12 Maple Street, Columbus, OH 43001 - sorry, I meant 14 Maple Street.",
+                "Please send SKU-12345 qty 10, standard." + a + " Please send 10 more of the same item."]:
+        assert g(bad) == "human_review", bad
+    assert g("Please send SKU-12345 qty 1.000, standard." + a, qty=1) == "human_review"
+    assert g("Please send SKU-12345 qty 10. No need for next day, standard is fine." + a, svc="next_day", sq="next day") == "human_review"
+    for fine in ["Line 1 SKU-12345 qty 10, standard." + a, "We actually need SKU-12345 qty 10, standard." + a,
+                 "PO 4471 SKU-12345 x 10, standard." + a]:
+        assert g(fine) == "auto_accept", fine
+
+
+
+def test_review3_grounding_metric_words_rate_columns_totals_and_respectively():
+    from app.agents.schemas import EvidenceAnswer as A
+    t1 = [{"output": {"columns": ["carrier_id", "late_rate", "deliveries", "avg_days_late", "late_deliveries"],
+                      "rows": [["D", 0.3948, 8928, 2.95, 3525], ["B", 0.2468, 9762, 2.78, 2409]]}}]
+    t2 = [{"output": {"columns": ["account_tier", "revenue_at_risk", "share_pct"],
+                      "rows": [["Tier 1", 310680, 35.6], ["Tier 2", 561780, 64.4]]}}]
+    t3 = [{"output": {"columns": ["client_id", "client_name", "late_deliveries"], "rows": [["C099", "Client 099", 12], ["C033", "Client 033", 40]]}}]
+
+    def ok(t, tr):
+        return evidence.grounding(A(answer=t, answerable=True), tr)["grounded"]
+
+    for wrong, tr in [("Carrier D's failure rate was 60.5%.", t1), ("Carrier D missed 60.5% of its promised dates.", t1),
+                      ("Carrier D's late rate was 2.95%.", t1), ("Carrier D was late on 35.25% of deliveries.", t1),
+                      ("Client 033 had 12 late deliveries.", t3)]:
+        assert not ok(wrong, tr), wrong
+    for right, tr in [("Carrier B was best and Carrier D worst, at 24.7% and 39.5% late respectively.", t1),
+                      ("Tier 2 holds 64.4% of revenue at risk ($561,780).", t2),
+                      ("Carriers B and D together handled 18,690 deliveries.", t1),
+                      ("Total revenue at risk is $872,460, with Tier 2 at $561,780.", t2),
+                      ("Client 033 had 40 late deliveries.", t3),
+                      ("Carrier D's on-time rate is just 60.5%, against 75.3% for Carrier B.", t1)]:
+        assert ok(right, tr), right

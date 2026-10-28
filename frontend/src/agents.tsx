@@ -21,7 +21,7 @@ type Candidate = { delivery_id: string; client_id: string; client_name: string; 
 type TriggerStats = { window: string; threshold: number; deliveries: number; alerts_fired: number; late: number; precision: number; recall: number }
 type AlertResult = {
   facts: Record<string, string | number>; alert: { subject: string; body: string; channel: string }
-  checks: { banned_terms: string[]; dates_not_in_facts: string[]; actions_not_in_facts: string[]; names_not_in_facts: string[]; word_count: number; within_80_words: boolean; has_order_ref: boolean; passed: boolean }
+  checks: { banned_terms: string[]; dates_not_in_facts: string[]; actions_not_in_facts: string[]; names_not_in_facts: string[]; words_not_in_facts: string[]; promises_not_in_facts: string[]; times_not_in_facts: string[]; numbers_not_in_facts: string[]; negations_not_in_facts: string[]; status_claims_not_in_facts: string[]; word_count: number; within_80_words: boolean; has_order_ref: boolean; passed: boolean }
   outcome: { late: boolean; days_late: number; delivered_date: string }
   status: 'ready_for_approval' | 'needs_edit'
   judge?: { factual: number; clarity: number; action: number; tone: number; issues: string[] }
@@ -47,7 +47,7 @@ type EvalReport = {
   coverage?: { emails: number; alerts: number; questions: number; judge: boolean }
   failures: { intake?: { email_id: string; format?: number; problem: string; decision?: string }[] }
 }
-type EvalJob = { job_id: string; status: 'running' | 'done' | 'failed'; progress: string; steps: number; error?: string; report?: EvalReport }
+type EvalJob = { job_id: string; status: 'running' | 'done' | 'failed' | 'interrupted'; progress: string; steps: number; error?: string; report?: EvalReport }
 export type LlmStatus = { provider: string; is_mock: boolean; models?: { fast: string; smart: string }; error?: string; prompts: string[]; auth_required?: boolean }
 
 const DECISION: Record<string, { label: string; tone: string; note: string }> = {
@@ -203,7 +203,7 @@ export function AlertsPage() {
           {!res && !error && <div className="muted">Select a delivery and click Draft alert.</div>}
           {res && (
             <>
-              <div className={`decision ${res.status === 'ready_for_approval' ? 'good' : 'bad'}`}><b>{res.status === 'ready_for_approval' ? 'Ready for approval' : 'Needs edit'}</b> · {res.checks.word_count} words · banned terms: {res.checks.banned_terms.length ? res.checks.banned_terms.join(', ') : 'none'} · dates not in facts: {res.checks.dates_not_in_facts.length ? res.checks.dates_not_in_facts.join(', ') : 'none'} · actions not in facts: {res.checks.actions_not_in_facts.length ? res.checks.actions_not_in_facts.join(', ') : 'none'}</div>
+              <div className={`decision ${res.status === 'ready_for_approval' ? 'good' : 'bad'}`}><b>{res.status === 'ready_for_approval' ? 'Ready for approval' : 'Needs edit'}</b> · {res.checks.word_count} words · banned terms: {res.checks.banned_terms.length ? res.checks.banned_terms.join(', ') : 'none'} · dates not in facts: {res.checks.dates_not_in_facts.length ? res.checks.dates_not_in_facts.join(', ') : 'none'} · not in facts: {[...res.checks.actions_not_in_facts, ...res.checks.status_claims_not_in_facts, ...res.checks.promises_not_in_facts, ...res.checks.times_not_in_facts, ...res.checks.numbers_not_in_facts, ...res.checks.negations_not_in_facts, ...res.checks.words_not_in_facts].join(', ') || 'none'}</div>
               <div className="muted small">Before sending, an approver confirms the proposed action: “{res.facts.action}”. Replayed as of {res.facts.replay_at}; real outcome: {res.outcome.late ? `late by ${res.outcome.days_late} days` : 'on time'}.</div>
               <div className="draft"><b>{res.alert.subject}</b><pre>{res.alert.body}</pre></div>
               {res.judge && (
@@ -276,7 +276,7 @@ export function QualityPage() {
         setProgress(`${j.progress} (${j.steps} steps)`)
         if (j.status === 'running') { setTimeout(poll, 3000); return }
         if (j.status === 'done' && j.report) setR(j.report)
-        if (j.status === 'failed') setError(`Eval run failed: ${j.error}`)
+        if (j.status === 'failed' || j.status === 'interrupted') setError(`Eval run ${j.status}: ${j.error}`)
         setBusy(false); setProgress(null)
       }).catch((e: Error) => { setError(e.message); setBusy(false) })
       poll()

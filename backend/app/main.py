@@ -1,6 +1,7 @@
 """Halcyon OTD control tower API (slice 1: analytics)."""
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -260,6 +261,18 @@ _JOBS: dict[str, dict] = {}
 _JOB_LOCK = threading.Lock()
 
 
+def _job_file(job_id: str):
+    from . import evals
+    return evals.REPORT_DIR / "jobs" / f"{job_id}.json"
+
+
+def _save_job(job: dict) -> None:
+    import json
+    f = _job_file(job["job_id"])
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(json.dumps(job, default=str))
+
+
 def _run_job(job_id: str, limit: int, alerts: int, only: str | None) -> None:
     from . import evals
     job = _JOBS[job_id]
@@ -267,6 +280,8 @@ def _run_job(job_id: str, limit: int, alerts: int, only: str | None) -> None:
     def hook(msg: str) -> None:
         job["progress"] = msg
         job["steps"] += 1
+        if job["steps"] % 25 == 0:
+            _save_job(job)  # a restart mid-run then reports "interrupted" with the last progress, not "unknown job"
 
     evals.PROGRESS_HOOK = hook
     try:
@@ -277,20 +292,22 @@ def _run_job(job_id: str, limit: int, alerts: int, only: str | None) -> None:
     finally:
         evals.PROGRESS_HOOK = None
         job["finished_at"] = time.time()
+        _save_job(job)
 
 
 @app.post("/api/evals/run")
 def evals_run(limit: int = Query(300, ge=5, le=300), alerts: int = Query(20, ge=1, le=50),
               only: str | None = Query(None, pattern="^(intake|alerts|evidence)$"), _: None = Depends(paid)) -> dict:
     """Starts the eval suite in the background (a full run takes minutes) and returns a job to poll."""
-    _take("eval runs", settings.eval_runs_per_hour, 3600)
     with _JOB_LOCK:
         running = next((j for j in _JOBS.values() if j["status"] == "running"), None)
-        if running:
+        if running:  # a duplicate click joins the running job and spends nothing
             return {k: v for k, v in running.items() if k != "report"}
+        _take("eval runs", settings.eval_runs_per_hour, 3600)
         job_id = uuid.uuid4().hex[:12]
         _JOBS[job_id] = {"job_id": job_id, "status": "running", "progress": "starting", "steps": 0,
                          "started_at": time.time(), "params": {"limit": limit, "alerts": alerts, "only": only}}
+        _save_job(_JOBS[job_id])
     threading.Thread(target=_run_job, args=(job_id, limit, alerts, only), daemon=True).start()
     return {k: v for k, v in _JOBS[job_id].items() if k != "report"}
 
@@ -298,6 +315,11 @@ def evals_run(limit: int = Query(300, ge=5, le=300), alerts: int = Query(20, ge=
 @app.get("/api/evals/jobs/{job_id}")
 def evals_job(job_id: str) -> dict:
     job = _JOBS.get(job_id)
+    if not job and re.fullmatch(r"[0-9a-f]{12}", job_id) and _job_file(job_id).exists():
+        import json
+        job = json.loads(_job_file(job_id).read_text())
+        if job.get("status") == "running":  # on disk as running but not in this process: the API restarted mid-run
+            job["status"], job["error"] = "interrupted", "the API restarted during this run; start it again"
     if not job:
         raise HTTPException(404, "unknown job")
     return job

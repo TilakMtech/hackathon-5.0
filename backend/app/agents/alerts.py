@@ -123,6 +123,62 @@ def _dates_in(text: str, year: int) -> list[tuple[str, object]]:
     return out
 
 
+# Claims about where the order physically is. The replay facts never state a shipment status, so none may be asserted.
+STATUS_CLAIM = re.compile(
+    # where the order is, or that the risk is gone: the replay facts never say either
+    r"\b(?:has|have|had|was|were|is|are)\s+(?:now\s+|already\s+|just\s+)?(?:been\s+)?"
+    r"(dispatched|despatched|shipped|sent out|delivered|collected|picked up|loaded)\b"
+    r"|\b(?:on its way|on the way|in transit|out for delivery|left our warehouse|on time|on schedule|on track|"
+    r"no longer|resolved|fixed|sorted out|back on|ensur\w*|guarante\w*|promis\w* (?:to|that|you)|commit\w* to|make sure)\b", re.I)
+# promises of delivery or despatch; allowed only when the facts' action uses the same verb ("will dispatch as soon as")
+PROMISE = re.compile(r"\b(?:will|shall|'ll|going to|expect to|should)\s+(?:now\s+|still\s+|then\s+)?(?:be\s+)?"
+                     r"(deliver\w*|dispatch\w*|despatch\w*|ship\w*|send\w* (?:it|your order|the order|the item|out)|arriv\w*|reach\w* you|"
+                     r"leav\w*|get (?:it|your order) to)", re.I)
+# time-of-day and relative-day promises; allowed only in a sentence about the next update, at the facts' time
+TIME_WORD = re.compile(r"\b(?:today|tomorrow|tonight|this (?:morning|afternoon|evening)|end of (?:the )?day|eod|"
+                       r"within \w+ (?:hours?|days?|minutes?)|\d{1,2}(?::\d{2})?\s*(?:am|pm)|\d{1,2}:\d{2}|noon|midday)\b", re.I)
+UPDATE_SENTENCE = re.compile(r"\b(?:updat\w*|let you know|write|be in touch|contact you|hear from)\b", re.I)
+NEGATION = re.compile(r"\b(?:not|no|never|none|nothing|without|won't|isn't|aren't|wasn't|weren't|don't|doesn't|didn't|"
+                      r"can't|cannot|couldn't|hasn't|haven't)\b", re.I)
+COURTESY_NEGATION = re.compile(r"\b(?:do not|don't|please do not) hesitate\b", re.I)
+SYNONYM_ACTIONS = [{"moving", "move", "moved", "switching", "switch", "transferring", "transfer", "reassigning", "reassign"}]
+# ALLOWLIST: every content word must come from the facts or from this neutral set. A blocklist of "bad" causes can
+# never be complete ("staffing shortages", "a labour dispute", ...); an allowlist fails closed. Words that would
+# carry a claim on their own (today, tomorrow, resolved, fixed, on time) are deliberately NOT here.
+NEUTRAL = set("""
+hello hi dear good morning afternoon team client customer order orders shipment shipments delivery deliveries due promised
+date dates expected expect late later delay delays delayed risk miss missed missing schedule time update updates updated
+further next send write writing let know inform informing reach reaching out ahead advance want wanted would will can may
+might could should please contact questions question help apologise apologize apology apologies sorry inconvenience
+regret thank thanks regards kind best sincerely warm patience understanding appreciate appreciated hesitate monitoring
+monitor situation closely follow up halcyon success account director your our we us you this that these those it its the
+a an and or but however because so as to of for with by at in on from about before after until while also currently
+soon possible reason reasons affected following unfortunately note notice notify notifying heads aware share sharing
+keep posted hear any if all both which what when where who how there here than then very more most such only
+just able working work progress status latest direct line regarding concerning subject re arrives
+arriving originally planned plan new current feel free detail details information receive received take taking step
+steps action actions fix today tomorrow arrive cause don't be been being is are was were has have had do does did i i'm i'll we're we'll we've it's you're
+you'll there's that's let's monday tuesday wednesday thursday friday saturday sunday january february march april
+may june july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec am pm
+""".split())
+
+
+def _stem(w: str) -> str:
+    w = re.sub(r"'s$", "", w.lower()).strip("'")
+    for suf in ("ies", "ing", "ed", "es", "s", "ly"):
+        if w.endswith(suf) and len(w) - len(suf) >= 3:
+            return w[: -len(suf)] + ("y" if suf == "ies" else "")
+    return w
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[A-Za-z][A-Za-z']*[A-Za-z]|[A-Za-z]", text)  # hyphens split ("follow-up" -> follow, up)
+
+
+def _sentences(text: str) -> list[str]:
+    return [x for x in re.split(r"(?<=[.!?])\s+|\n+", text) if x.strip()]
+
+
 def check_alert(alert: Alert, facts: dict) -> dict:
     """Deterministic checks on subject AND body. Anything named (date, action, carrier, warehouse, cause) must be in the facts."""
     text = f"{alert.subject}\n{alert.body}"
@@ -132,22 +188,65 @@ def check_alert(alert: Alert, facts: dict) -> dict:
     allowed_days = {d.strftime("%A").lower() for d in allowed}
     bad_dates = sorted({raw for raw, val in _dates_in(text, promised.year)
                         if val is None or (isinstance(val, str) and val not in allowed_days) or (not isinstance(val, str) and val not in allowed)})
-    unbacked = sorted({m.group(0).lower() for m in ACTION_CLAIM.finditer(text) if m.group(0).lower() not in backing})
+    def _backed(claim: str) -> bool:
+        first = claim.split()[0]
+        if claim in backing or first in backing.split():
+            return True
+        return any(first in grp and grp & set(backing.split()) for grp in SYNONYM_ACTIONS)
+    unbacked = sorted({m.group(0).lower() for m in ACTION_CLAIM.finditer(text) if not _backed(m.group(0).lower())})
     wh = load_dataset().warehouses.set_index("warehouse_id").warehouse_name.to_dict()
     ok_names = backing + " " + " ".join(f"{w} {n}".lower() for w, n in wh.items() if w.lower() in backing)
     names = sorted({(f"Carrier {m.group(1).upper()}" if m.group(1) else m.group(2)) for m in CARRIER_NAME.finditer(text)
                     if (f"carrier {m.group(1).lower()}" if m.group(1) else m.group(2).lower()) not in backing}
                    | {m.group(0) for m in WAREHOUSE_NAME.finditer(text) if (m.group(1) or m.group(2)).lower() not in ok_names})
     causes = sorted({m.group(0).lower() for m in CAUSE_CLAIM.finditer(text) if m.group(0).lower() not in backing})
+    status = sorted({m.group(0).lower() for m in STATUS_CLAIM.finditer(text)})
+    fact_text = " ".join(str(facts.get(k, "")) for k in ("causes", "action", "next_update", "account_owner", "client_name",
+                                                         "tier", "order_ref"))
+    fact_text += " " + ok_names  # a warehouse the action names may also be called by its name ("W4" = "Northeast")
+    fact_low = fact_text.lower()
+    allowed_stems = {_stem(w) for w in _words(fact_text)} | {_stem(w) for w in NEUTRAL}
+    for grp in SYNONYM_ACTIONS:  # "switching to Carrier C" when the action says "moving it to Carrier C"
+        if grp & set(fact_low.split()):
+            allowed_stems |= {_stem(w) for w in grp}
+    unsupported = sorted({w.lower() for w in _words(text) if len(w) > 1 and _stem(w) not in allowed_stems
+                          and w != facts["order_ref"] and not re.fullmatch(r"ORD|W\d|AM|PM", w, re.I)})
+    # promises to deliver/dispatch/arrive: only the verb the action itself uses
+    promises = sorted({m.group(0).lower() for m in PROMISE.finditer(text)
+                       if _stem(m.group(1).split()[0]) not in {_stem(w) for w in _words(facts["action"])}})
+    # times: only in a next-update sentence, and only the facts' own time; or a time the action states
+    update_times = {t.lower() for t in TIME_WORD.findall(facts.get("next_update", ""))} | {"12:00", "noon", "midday", "12 pm", "12pm"}
+    times = []
+    for sent in _sentences(text):
+        for t in TIME_WORD.findall(sent):
+            tl = t.lower()
+            in_action = tl in fact_low  # a time the facts state ("after the 8am pick list", "leaves this afternoon")
+            is_update = UPDATE_SENTENCE.search(sent) and (tl in update_times or tl == "tomorrow")
+            if not (in_action or is_update):
+                times.append(t)
+    # numbers: every number must be one the facts contain (order ref, dates, the next-update time, 8am, W4 ...)
+    fact_nums = set(re.findall(r"\d+", fact_text + " " + facts["promised_date"] + " " + facts.get("next_update", "")))
+    numbers = sorted({n for n in re.findall(r"\d+", re.sub(r"\b\d{4}-\d{2}-\d{2}\b|" + re.escape(facts["order_ref"]), " ", text))
+                      if n not in fact_nums})
+    # negations can flip a fact ("it will not be late", "not caused by the address"); only the facts' own may appear
+    negations = sorted({m.group(0).lower() for m in NEGATION.finditer(COURTESY_NEGATION.sub(" ", text))
+                        if m.group(0).lower() not in fact_low.split()})
     words = len(alert.body.split())
-    passed = (not BANNED.search(text) and not bad_dates and not unbacked and not names and not causes and words <= 80
-              and facts["order_ref"] in alert.subject)
+    passed = (not BANNED.search(text) and not bad_dates and not unbacked and not names and not causes and not status
+              and not unsupported and not promises and not times and not numbers and not negations
+              and words <= 80 and facts["order_ref"] in alert.subject)
     return {
         "banned_terms": sorted({m.group(0).lower() for m in BANNED.finditer(text)}),
         "dates_not_in_facts": bad_dates,
         "actions_not_in_facts": unbacked,
         "names_not_in_facts": names,
         "causes_not_in_facts": causes,
+        "status_claims_not_in_facts": status,
+        "words_not_in_facts": unsupported,  # allowlist: content words neither in the facts nor in the neutral set
+        "promises_not_in_facts": promises,
+        "times_not_in_facts": times,
+        "numbers_not_in_facts": numbers,
+        "negations_not_in_facts": negations,
         "word_count": words, "within_80_words": words <= 80,
         "has_order_ref": facts["order_ref"] in alert.subject,
         "passed": passed,

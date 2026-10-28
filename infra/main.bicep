@@ -149,7 +149,10 @@ resource api 'Microsoft.App/containerApps@2024-03-01' = {
         }
       ]
       // keep one replica warm so the demo never hits a cold start (model fit takes ~10 s)
-      scale: { minReplicas: 1, maxReplicas: 3 }
+      // ONE replica: eval jobs and the spend cap live in process memory. Jobs are also written to the container's disk,
+      // which survives a process restart but not a new container; durable jobs and scaling out need shared storage
+      // (an Azure Files mount or Redis) for both. Until then more replicas would split them.
+      scale: { minReplicas: 1, maxReplicas: 1 }
     }
   }
 }

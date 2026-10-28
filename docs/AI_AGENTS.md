@@ -44,3 +44,16 @@ The **mock** provider is a rule-based parser, not a model. It lets the team work
 
 Azure OpenAI fallback: the same steps with `OTD_LLM_PROVIDER=azure_openai` and the `OTD_AOAI_*` values.
 On Azure: `azd env set OTD_LLM_PROVIDER claude_foundry`, `azd env set FOUNDRY_RESOURCE csc-blp-foundry-cus`, `azd env set FOUNDRY_API_KEY <key>`, then `azd up`. The key is stored as a Container Apps secret.
+
+## What the checks can and cannot prove
+
+The guardrails are defence in depth, not proof. Each one fails closed, and each was tested by an external audit and two independent attack rounds. Every reproduced bypass is pinned as a regression test in `backend/tests/test_agents.py`.
+
+- **Intake** auto-accepts only when the email is simple enough to verify completely:
+  - the order part contains exactly the extracted SKUs, each quantity is written beside its own SKU, and quotes back the service level and date;
+  - every number in the order part is a quantity, address, date or label (PO, line, client);
+  - the email contains no correction or ambiguity words, no second service level, no fractional or `1.000`-style number, and no injection flag.
+
+  Anything else goes to a person.
+- **Delay alerts** are checked against an allowlist: every content word must be in the facts or in a small neutral set, and every number, time and negation must be one the facts contain. Claims about status, delivery promises and invented remedies are blocked. No automatic check can prove free text asserts nothing new, so **every alert waits for a person to approve the proposed action before it is sent**.
+- **Evidence answers** bind each number to its entity (carrier, client, region, tier), metric (late vs on-time) and unit (% vs count), and match it to a query result row. This verifies traceability. Answer accuracy is measured separately, against gold SQL.
