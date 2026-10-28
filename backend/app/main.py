@@ -109,7 +109,7 @@ def eligibility() -> dict:
 
 @app.post("/api/simulate")
 def simulate(req: SimulateRequest) -> dict:
-    unknown = set(req.fixes) - set(analytics.DRIVER_KEYS)
+    unknown = set(req.fixes) - set(analytics.LEVERS)
     if unknown:
         raise HTTPException(400, f"unknown drivers: {sorted(unknown)}")
     return analytics.simulate(req.fixes, req.route_cut)

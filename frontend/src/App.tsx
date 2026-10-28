@@ -147,6 +147,8 @@ function BridgeChart({ b }: { b: Bridge }) {
   )
 }
 
+const NAMES: Record<string, string> = { drv_address: 'Incomplete address', drv_cutoff: 'Same-day after cutoff', drv_stock: 'No stock at nearest warehouse', drv_lane: 'Bad carrier lane', stops_on_route: 'Per extra stop' }
+
 function ModelChecksCard() {
   const { data: m } = useApi<ModelChecks>('/api/model-checks')
   if (!m) return null
@@ -167,7 +169,7 @@ function ModelChecksCard() {
           <table><thead><tr><th>Odds ratio</th><th className="r">All rows</th><th className="r">Without them</th></tr></thead>
             <tbody>
               <tr><td>OTD</td><td className="r">{pct(a.otd)}</td><td className="r">{pct(x.otd)}</td></tr>
-              {keys.map((k) => <tr key={k}><td>{k}</td><td className="r">{a.odds_ratios[k].or}</td><td className="r">{x.odds_ratios[k].or}</td></tr>)}
+              {keys.map((k) => <tr key={k}><td>{NAMES[k]}</td><td className="r">{a.odds_ratios[k].or.toFixed(2)}</td><td className="r">{x.odds_ratios[k].or.toFixed(2)}</td></tr>)}
             </tbody></table>
         </div>
       </div>

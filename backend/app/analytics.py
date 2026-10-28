@@ -18,7 +18,7 @@ from .data import Dataset, load_dataset
 DRIVERS: list[dict] = [
     {
         "key": "drv_address", "label": "Incomplete address at intake",
-        "step": "3. Email order keying", "fix": "Email intake agent + address check",
+        "step": "3. Order intake (email keying; EDI/API feeds)", "fix": "Email intake agent + feed address validation",
     },
     {
         "key": "drv_cutoff", "label": "Same-day order after the 8am cutoff",
