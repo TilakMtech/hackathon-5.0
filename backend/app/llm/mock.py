@@ -110,7 +110,7 @@ def mock_alert(f: dict) -> dict:
     sign = (f"Your contact: {f['account_owner']}" if f["tier"] == "Tier 1" else "Halcyon Customer Success")
     return {"subject": f"Update on order {f['order_ref']}",
             "body": (f"Hello,\n\nYour order {f['order_ref']}, due on {f['promised_date']}, {when}. "
-                     f"This is because {f['causes']}. To fix it, {f['action']}.\n\n{sign}"),
+                     f"This is because {f['causes'].split('; ')[0]}. To fix it, {f['action']}.\n\n{sign}"),
             "channel": "email"}
 
 

@@ -112,6 +112,11 @@ def flag_bad_lanes(d: pd.DataFrame) -> pd.DataFrame:
     """A lane (carrier x destination region) is 'bad' when, on orders with no upstream problem,
     its late rate is at least double the network rate and above the configured floor.
     Data-driven, so the rule re-learns when new months arrive."""
+    return apply_lanes(d, bad_lane_set(d))
+
+
+def bad_lane_set(d: pd.DataFrame) -> set[str]:
+    """Lanes judged bad from the rows given. Pass only past rows to learn the rule without seeing the future."""
     clean = d[d.clean_upstream == 1]
     network = clean.late.mean()
     lanes = clean.groupby("lane").agg(late_rate=("late", "mean"), n=("late", "size")).reset_index()
@@ -120,7 +125,10 @@ def flag_bad_lanes(d: pd.DataFrame) -> pd.DataFrame:
         & (lanes.late_rate >= settings.bad_lane_floor)
         & (lanes.n >= settings.bad_lane_min_n)
     )
-    bad = set(lanes.loc[lanes.bad, "lane"])
+    return set(lanes.loc[lanes.bad, "lane"])
+
+
+def apply_lanes(d: pd.DataFrame, bad: set[str]) -> pd.DataFrame:
     d = d.copy()
     d["drv_lane"] = d.lane.isin(bad).astype(int)
     d["any_driver"] = ((d.drv_address + d.drv_stock + d.drv_cutoff + d.drv_lane) > 0).astype(int)

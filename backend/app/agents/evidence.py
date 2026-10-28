@@ -78,45 +78,105 @@ NON_FIGURES = re.compile(
     rf"|\b{MONTH}\s+\d{{1,2}}(?:st|nd|rd|th)?\b(?:,?\s+\d{{4}})?"         # dates: "April 1", "Sep 30, 2026"
     rf"|\b\d{{1,2}}(?:st|nd|rd|th)?\s+{MONTH}(?=\W|$)", re.I)             # dates: "1 April"
 SCALE = {"k": 1e3, "thousand": 1e3, "m": 1e6, "mn": 1e6, "million": 1e6, "b": 1e9, "bn": 1e9, "billion": 1e9}
-FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)
+FIGURE = re.compile(r"(?<![\w.,])(?<![A-Za-z]-)(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|mn|bn|k|m|b)?\b", re.I)  # ranges like "24.7-24.8%" give both ends; "SKU-123" is a code
+REGIONS = ("Midwest", "Southeast", "Northeast", "West")
+ENTITY = re.compile(r"\bCarriers?\s+[A-F](?:(?:\s*,\s*|\s+and\s+|\s*&\s*)[A-F]\b)*|\bC\d{3}\b|\bTier\s?[123]\b|\bW\d\b|\b(?:"
+                    + "|".join(REGIONS) + r")\b")
+ENTITY_REACH = 60  # a figure belongs to the entity named at most this many characters before it, in the same clause
 
 
-def _figures(text: str) -> list[tuple[float, float]]:
-    """Numbers in prose as (value, rounding tolerance); "$14.2 million" -> (14_200_000, 50_000)."""
+def _blank(text: str) -> str:
+    """Labels, dates and time spans become spaces of the same length, so positions still line up with the answer."""
+    return NON_FIGURES.sub(lambda m: " " * len(m.group(0)), text)
+
+
+def _figures_at(text: str) -> list[tuple[float, float, int]]:
+    """Numbers in prose as (value, rounding tolerance, position); "$14.2 million" -> (14_200_000, 50_000, i)."""
     out = []
-    for num, unit in FIGURE.findall(NON_FIGURES.sub(" ", text)):
+    for m in FIGURE.finditer(_blank(text)):
+        num, unit = m.group(1), m.group(2)
         v = float(num.replace(",", ""))
         if not unit and 2026 <= v <= 2027:
             continue  # a year
         if unit:
             decimals = len(num.split(".")[1]) if "." in num else 0
-            s = SCALE[unit.lower()]
-            out.append((v * s, 0.5 * 10 ** -decimals * s))
+            sc = SCALE[unit.lower()]
+            out.append((v * sc, 0.5 * 10 ** -decimals * sc, m.start()))
         else:
-            out.append((v, 0.0))
+            out.append((v, 0.0, m.start()))
+    return out
+
+
+def _figures(text: str) -> list[tuple[float, float]]:
+    return [(v, tol) for v, tol, _ in _figures_at(text)]
+
+
+def _entity_for(text: str, pos: int) -> set[str] | None:
+    """The entity a figure is about: the last one named shortly before it in the same clause ({"D"}, {"C049"}, ...)."""
+    clause_start = max(text.rfind(c, 0, pos) for c in ".;(\n") + 1
+    hits = [m for m in ENTITY.finditer(text, clause_start, pos) if pos - m.end() <= ENTITY_REACH]
+    if not hits:
+        return None
+    e = hits[-1].group(0)
+    if e.lower().startswith("carrier"):
+        return set(re.findall(r"\b[A-F]\b", e.split(None, 1)[1]))
+    return {e.replace(" ", "") if e.startswith("Tier") else e}
+
+
+def _row_entities(row: list) -> set[str]:
+    out = set()
+    for v in row:
+        if isinstance(v, str):
+            out.add(v.strip())
+            out.add(v.replace("Carrier ", "").replace(" ", "").strip())
     return out
 
 
 def grounding(answer: EvidenceAnswer, trace: list[dict]) -> dict:
-    """Every figure in the answer should be traceable to a query result (allowing %, rounding and K/M/B units)."""
-    pool: list[float] = []
+    """Claim-level check. Each figure must match a value in a query result (allowing %, rounding, K/M/B units and
+    column totals), AND, when the sentence ties it to a carrier, client, region, tier or warehouse, the matching
+    row must be that entity's row. An answerable answer with no successful query is never grounded.
+    This verifies traceability, not correctness: answer accuracy is measured separately against gold SQL."""
+    rows_all: list[list] = []
     for step in trace:
-        rows = step.get("output", {}).get("rows", []) or []
-        for row in rows:
-            for v in row:
-                if isinstance(v, int | float):
-                    pool += [float(v), float(v) * 100]
+        out = step.get("output", {}) or {}
+        if not out.get("error"):
+            rows_all += out.get("rows", []) or []
+    cands: list[tuple[float, set[str]]] = []
+    for row in rows_all:
+        ents = _row_entities(row)
+        for v in row:
+            if isinstance(v, int | float) and not isinstance(v, bool):
+                cands += [(float(v), ents), (float(v) * 100, ents)]
+    for step in trace:
+        rows = (step.get("output", {}) or {}).get("rows", []) or []
         for col in zip(*rows, strict=False):  # column totals are derived figures the agent may report
-            vals = [float(v) for v in col if isinstance(v, int | float)]
+            vals = [float(v) for v in col if isinstance(v, int | float) and not isinstance(v, bool)]
             if vals:
-                pool.append(sum(vals))
+                cands.append((sum(vals), set()))
 
-    def found(n: float, tol: float) -> bool:
-        return any(abs(n - p) <= max(0.051, abs(p) * 0.005, tol) or round(p) == n for p in pool)
+    def check(text: str) -> tuple[list[float], list[float]]:
+        untraced, wrong_entity = [], []
+        for n, tol, pos in _figures_at(text):
+            match = [ents for p, ents in cands if abs(n - p) <= max(0.051, abs(p) * 0.005, tol) or round(p) == n]
+            if not match:
+                untraced.append(n)
+                continue
+            want = _entity_for(text, pos)
+            if want and not any(not ents or (want & ents) for ents in match):
+                wrong_entity.append(n)
+        return untraced, wrong_entity
 
-    figs = _figures(answer.answer)
-    untraced = [n for n, tol in figs if not found(n, tol)]
-    return {"numbers_in_answer": len(figs), "untraced_numbers": untraced, "grounded": not untraced}
+    untraced, wrong = check(answer.answer)
+    fig_untraced: list[float] = []
+    for f in answer.figures:
+        u, w = check(f"{f.label}: {f.value}")
+        fig_untraced += u + w
+    n = len(_figures_at(answer.answer))
+    no_query = answer.answerable and not rows_all
+    grounded = not untraced and not wrong and not fig_untraced and not no_query
+    return {"numbers_in_answer": n, "untraced_numbers": untraced, "wrong_entity_numbers": wrong,
+            "untraced_figures": fig_untraced, "no_query_result": no_query, "grounded": grounded}
 
 
 def ask(question: str, provider_name: str | None = None) -> dict:
@@ -124,8 +184,24 @@ def ask(question: str, provider_name: str | None = None) -> dict:
     p4 = load_prompt("p4_evidence_agent")
     tool = Tool("run_sql", "Run one read-only SELECT query on the Halcyon DuckDB and get rows back.",
                 SQL_TOOL_SCHEMA, lambda args: run_sql(args["query"]))
-    answer, trace = provider.tool_loop(p4, p4.render_user(question=question), [tool], EvidenceAnswer,
-                                       context={"question": question, "run_sql": run_sql})
-    return {"question": question, "answer": answer.model_dump(), "trace": trace,
-            "grounding": grounding(answer, trace) if answer.answerable else None,
-            "provider": provider.name, "prompt": p4.ref}
+    ctx = {"question": question, "run_sql": run_sql}
+    answer, trace = provider.tool_loop(p4, p4.render_user(question=question), [tool], EvidenceAnswer, context=ctx)
+    g = grounding(answer, trace) if answer.answerable else None
+    repaired = False
+    if g and not g["grounded"]:  # one repair round: name the problem, ask for a re-query; never pass it through silently
+        problems = []
+        if g["no_query_result"]:
+            problems.append("you answered without a successful query result")
+        if g["untraced_numbers"] or g["untraced_figures"]:
+            problems.append(f"these numbers are in no query result: {g['untraced_numbers'] + g['untraced_figures']}")
+        if g["wrong_entity_numbers"]:
+            problems.append(f"these numbers belong to a different carrier, client, region or tier row: {g['wrong_entity_numbers']}")
+        retry = (p4.render_user(question=question) + "\n\nA check on your previous answer found that "
+                 + "; ".join(problems) + ". Run the queries again and state only numbers that appear in a result row for "
+                 "the entity you name. If you cannot, set answerable to false.")
+        answer2, trace2 = provider.tool_loop(p4, retry, [tool], EvidenceAnswer, context=ctx)
+        g2 = grounding(answer2, trace2) if answer2.answerable else None
+        answer, trace, g, repaired = answer2, trace + trace2, g2, True
+    status = "declined" if not answer.answerable else ("verified" if g and g["grounded"] else "unverified")
+    return {"question": question, "answer": answer.model_dump(), "trace": trace, "grounding": g, "status": status,
+            "repaired": repaired, "provider": provider.name, "prompt": p4.ref}

@@ -176,6 +176,11 @@ class AlertRequest(BaseModel):
     judge: bool = False
 
 
+@app.get("/api/alerts/trigger-stats")
+def alert_trigger_stats() -> dict:
+    return alert_agent.trigger_stats()
+
+
 @app.post("/api/alerts/draft")
 def alert_draft(req: AlertRequest) -> dict:
     try:

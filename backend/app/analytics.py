@@ -50,6 +50,48 @@ def fit_model():
     return smf.logit(FORMULA, d).fit(disp=0)
 
 
+HOLDOUT_SPLIT = "2026-08-01"  # train on orders received before this date, test on the rest
+
+
+def _auc(y, p) -> float:
+    """Rank-based ROC AUC (Mann-Whitney), no extra dependency."""
+    r = pd.Series(p).rank().to_numpy()
+    y = pd.Series(y).to_numpy()
+    n1, n0 = int(y.sum()), int(len(y) - y.sum())
+    return float((r[y == 1].sum() - n1 * (n1 + 1) / 2) / (n1 * n0))
+
+
+@lru_cache(maxsize=1)
+def holdout() -> dict:
+    """Out-of-time check: learn the lane rule AND fit the model on Apr-Jul only, then score Aug-Sep.
+    This tests prediction on unseen months. It does not prove what an intervention would do: that needs a pilot."""
+    from .data import apply_lanes, bad_lane_set
+    d = load_dataset().deliveries
+    is_train = d.order_received_ts < pd.Timestamp(HOLDOUT_SPLIT)
+    bad = bad_lane_set(d[is_train])
+    dd = apply_lanes(d, bad)
+    train, test = dd[is_train], dd[~is_train].copy()
+    m = smf.logit(FORMULA, train).fit(disp=0)
+    test["risk"] = m.predict(test)
+    test["decile"] = pd.qcut(test.risk.rank(method="first"), 10, labels=False)
+    cal = test.groupby("decile").agg(predicted=("risk", "mean"), observed=("late", "mean"), n=("late", "size"))
+    full_bad = bad_lane_set(d)
+    clean = train[(train.clean_upstream == 1) & (train.drv_lane == 0)]
+    best = clean.groupby(["destination_region", "carrier_id"]).late.mean().reset_index().sort_values("late")
+    best_by_region = best.groupby("destination_region").carrier_id.first().to_dict()
+    return {
+        "model": m, "test": test, "bad_lanes_train": sorted(bad), "best_carrier_by_region": best_by_region,
+        "summary": {
+            "split": HOLDOUT_SPLIT, "train_rows": int(len(train)), "test_rows": int(len(test)),
+            "auc": _r(_auc(test.late, test.risk)),
+            "otd_predicted": _r(1 - test.risk.mean()), "otd_observed": _r(1 - test.late.mean()),
+            "bad_lanes_train": sorted(bad), "same_lanes_as_full_data": bad == full_bad,
+            "calibration": [{"decile": int(i) + 1, "predicted_late": _r(r.predicted), "observed_late": _r(r.observed),
+                             "n": int(r.n)} for i, r in cal.iterrows()],
+        },
+    }
+
+
 def _predict_mean(d: pd.DataFrame, zero: tuple[str, ...] = (), route_cut: float = 0.0) -> float:
     """Mean predicted late probability on the full dataset. Cached: the data is static per deploy."""
     return _predict_mean_cached(tuple(sorted(zero)), round(float(route_cut), 4))

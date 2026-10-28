@@ -17,10 +17,13 @@ type IntakeResult = {
   provider: string; prompt: string
 }
 type Sample = { email_id: string; client_id: string; format: number; received_ts: string; subject: string; body: string; default_address: string; injection: boolean; has_missing: boolean }
-type Candidate = { delivery_id: string; client_id: string; client_name: string; promised: string; days_late: number; carrier: string; region: string; causes: string[] }
+type Candidate = { delivery_id: string; client_id: string; client_name: string; promised: string; risk: number; carrier: string; region: string; causes: string[]; outcome_late: boolean; outcome_days_late: number }
+type TriggerStats = { window: string; threshold: number; deliveries: number; alerts_fired: number; late: number; precision: number; recall: number }
 type AlertResult = {
   facts: Record<string, string | number>; alert: { subject: string; body: string; channel: string }
-  checks: { banned_terms: string[]; dates_not_in_facts: string[]; word_count: number; within_80_words: boolean; has_order_ref: boolean; passed: boolean }
+  checks: { banned_terms: string[]; dates_not_in_facts: string[]; actions_not_in_facts: string[]; names_not_in_facts: string[]; word_count: number; within_80_words: boolean; has_order_ref: boolean; passed: boolean }
+  outcome: { late: boolean; days_late: number; delivered_date: string }
+  status: 'ready_for_approval' | 'needs_edit'
   judge?: { factual: number; clarity: number; action: number; tone: number; issues: string[] }
   provider: string; prompt: string
 }
@@ -28,7 +31,8 @@ type AskResult = {
   question: string
   answer: { answer: string; sql: string | null; figures: { label: string; value: string }[]; answerable: boolean }
   trace: { tool: string; input: { query: string }; output: { row_count?: number; error?: string } }[]
-  grounding: null | { numbers_in_answer: number; untraced_numbers: number[]; grounded: boolean }
+  grounding: null | { numbers_in_answer: number; untraced_numbers: number[]; wrong_entity_numbers: number[]; untraced_figures: number[]; no_query_result: boolean; grounded: boolean }
+  status: 'verified' | 'unverified' | 'declined'; repaired: boolean
   provider: string; prompt: string
 }
 type Gate = { gate: string; value: number | null; op: string; threshold: number; passed: boolean | null; why: string; note?: string }
@@ -45,7 +49,7 @@ type EvalReport = {
 export type LlmStatus = { provider: string; is_mock: boolean; models?: { fast: string; smart: string }; error?: string; prompts: string[] }
 
 const DECISION: Record<string, { label: string; tone: string; note: string }> = {
-  auto_accept: { label: 'Auto-accept', tone: 'good', note: 'Complete, grounded, confident: goes straight to the WMS.' },
+  auto_accept: { label: 'Auto-accept (proposed)', tone: 'good', note: 'Complete, grounded, confident: proposed for the WMS without manual keying. This slice does not write to a WMS yet.' },
   request_info: { label: 'Ask the client', tone: 'warn', note: 'Address incomplete: confirmation request drafted below.' },
   human_review: { label: 'Human review', tone: 'bad', note: 'A guardrail fired or confidence is low: a person checks it.' },
 }
@@ -158,7 +162,9 @@ export function AlertsPage() {
   const [res, setRes] = useState<AlertResult | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [stats, setStats] = useState<TriggerStats | null>(null)
   useEffect(() => { get<Candidate[]>('/api/alerts/candidates?limit=12').then((c) => { setCands(c); setSel(c[0]?.delivery_id ?? null) }).catch((e: Error) => setError(e.message)) }, [])
+  useEffect(() => { get<TriggerStats>('/api/alerts/trigger-stats').then(setStats).catch(() => setStats(null)) }, [])
   const run = () => {
     if (!sel) return
     setBusy(true); setError(null)
@@ -166,16 +172,22 @@ export function AlertsPage() {
   }
   return (
     <>
-      <p className="lead">12 of 34 complaints say "nobody told us it would be late". The alert agent (P3) turns the delivery record and its root cause into a message to the client before they chase. Code blocks invented dates and liability language, and an independent judge prompt (P5) scores each message.</p>
+      <p className="lead">12 of 34 complaints say "nobody told us it would be late". This is a <b>historical replay</b> on August–September orders: the risk model and lane rule were learned on April–July only, an alert fires when the risk at despatch crosses {stats ? Math.round(stats.threshold * 100) : 50}%, and the agent never sees the real delivery date. Code blocks invented dates, actions, names and liability language; a judge prompt (P5) scores each draft. The remedial action is <b>proposed</b>, not executed, so every draft waits for an operations approver.</p>
+      {stats && <div className="tiles small-tiles">
+        <div className="tile"><div className="tile-label">Alerts that would have fired</div><div className="tile-value">{stats.alerts_fired.toLocaleString()}</div><div className="tile-sub">of {stats.deliveries.toLocaleString()} at-risk-account deliveries</div></div>
+        <div className="tile"><div className="tile-label">Precision</div><div className="tile-value">{Math.round(stats.precision * 100)}%</div><div className="tile-sub">of alerts were really late</div></div>
+        <div className="tile"><div className="tile-label">Recall</div><div className="tile-value">{Math.round(stats.recall * 100)}%</div><div className="tile-sub">of late deliveries were caught</div></div>
+      </div>}
       <div className="grid2">
         <section className="card">
-          <h3>Late deliveries for accounts threatening to leave</h3>
+          <h3>Highest-risk deliveries for accounts threatening to leave</h3>
           <table>
-            <thead><tr><th /><th>Delivery</th><th>Client</th><th>Promised</th><th className="r">Days late</th><th>Causes</th></tr></thead>
+            <thead><tr><th /><th>Delivery</th><th>Client</th><th>Promised</th><th className="r">Risk</th><th>Flags at despatch</th><th>Outcome (hidden from agent)</th></tr></thead>
             <tbody>{cands.map((c) => (
               <tr key={c.delivery_id} className={sel === c.delivery_id ? 'selected' : ''} onClick={() => setSel(c.delivery_id)}>
                 <td><input type="radio" checked={sel === c.delivery_id} readOnly /></td><td>{c.delivery_id}</td><td>{c.client_id}</td><td>{c.promised}</td>
-                <td className="r">{c.days_late}</td><td>{c.causes.map((k) => CAUSE_SHORT[k]).join(', ')}</td></tr>))}</tbody>
+                <td className="r">{Math.round(c.risk * 100)}%</td><td>{c.causes.map((k) => CAUSE_SHORT[k]).join(', ')}</td>
+                <td>{c.outcome_late ? `late ${c.outcome_days_late}d` : 'on time'}</td></tr>))}</tbody>
           </table>
           <div className="row pad">
             <label className="small"><input type="checkbox" checked={judge} onChange={(e) => setJudge(e.target.checked)} /> Score with judge prompt (P5)</label>
@@ -187,7 +199,8 @@ export function AlertsPage() {
           {!res && !error && <div className="muted">Select a delivery and click Draft alert.</div>}
           {res && (
             <>
-              <div className={`decision ${res.checks.passed ? 'good' : 'bad'}`}><b>{res.checks.passed ? 'Safe to send' : 'Blocked'}</b> · {res.checks.word_count} words · banned terms: {res.checks.banned_terms.length ? res.checks.banned_terms.join(', ') : 'none'} · dates not in facts: {res.checks.dates_not_in_facts.length ? res.checks.dates_not_in_facts.join(', ') : 'none'}</div>
+              <div className={`decision ${res.status === 'ready_for_approval' ? 'good' : 'bad'}`}><b>{res.status === 'ready_for_approval' ? 'Ready for approval' : 'Needs edit'}</b> · {res.checks.word_count} words · banned terms: {res.checks.banned_terms.length ? res.checks.banned_terms.join(', ') : 'none'} · dates not in facts: {res.checks.dates_not_in_facts.length ? res.checks.dates_not_in_facts.join(', ') : 'none'} · actions not in facts: {res.checks.actions_not_in_facts.length ? res.checks.actions_not_in_facts.join(', ') : 'none'}</div>
+              <div className="muted small">Before sending, an approver confirms the proposed action: “{res.facts.action}”. Replayed as of {res.facts.replay_at}; real outcome: {res.outcome.late ? `late by ${res.outcome.days_late} days` : 'on time'}.</div>
               <div className="draft"><b>{res.alert.subject}</b><pre>{res.alert.body}</pre></div>
               {res.judge && (
                 <div className="tiles small-tiles">
@@ -227,10 +240,12 @@ export function AskPage() {
       <Err msg={error} />
       {res && (
         <section className="card">
-          <div className={`decision ${!res.answer.answerable ? 'warn' : res.grounding?.grounded ? 'good' : 'bad'}`}>
-            <b>{!res.answer.answerable ? 'Declined: not in the data' : res.grounding?.grounded ? 'Grounded' : 'Check: untraced numbers'}</b>
-            {res.grounding && <> · {res.grounding.numbers_in_answer} numbers, {res.grounding.untraced_numbers.length} untraced</>}
+          <div className={`decision ${res.status === 'declined' ? 'warn' : res.status === 'verified' ? 'good' : 'bad'}`}>
+            <b>{res.status === 'declined' ? 'Declined: not in the data' : res.status === 'verified' ? 'Numbers traced to query rows' : 'Unverified: do not use these numbers'}</b>
+            {res.grounding && <> · {res.grounding.numbers_in_answer} numbers · {res.grounding.untraced_numbers.length + res.grounding.untraced_figures.length} untraced · {res.grounding.wrong_entity_numbers.length} on the wrong row{res.grounding.no_query_result ? ' · no query result' : ''}</>}
+            {res.repaired && <> · re-asked once after a failed check</>}
           </div>
+          <div className="muted small">Traced means each number appears in a result row for the carrier, client, region or tier it is stated for. It is not a proof the answer is right; answer accuracy is measured against gold SQL on the Prompt quality tab.</div>
           <p className="answer">{res.answer.answer}</p>
           {res.answer.figures.length > 0 && <div className="chips">{res.answer.figures.map((f) => <span key={f.label} className="chip static"><b>{f.value}</b> {f.label}</span>)}</div>}
           {res.answer.sql && <pre className="sql">{res.answer.sql}</pre>}

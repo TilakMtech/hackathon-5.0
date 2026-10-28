@@ -53,10 +53,18 @@ def test_sql_guard_blocks_writes_and_files():
 
 
 def test_alert_checks_catch_liability_and_invented_dates():
-    facts = {"promised_date": "2026-10-14", "new_estimate": "2026-10-15", "order_ref": "ORD-1"}
+    facts = {"promised_date": "2026-10-14", "new_estimate": "none", "order_ref": "ORD-1", "next_update": "by 12:00 on 2026-10-15",
+             "causes": "the assigned carrier is running behind", "action": "we are moving it to Carrier B, which serves your region reliably"}
     bad = Alert(subject="Order ORD-1", body="We will pay a penalty and deliver on 2026-10-20.")
     c = check_alert(bad, facts)
     assert not c["passed"] and c["dates_not_in_facts"] == ["2026-10-20"] and c["banned_terms"]
+    ok = Alert(subject="Update on ORD-1", body="Your order ORD-1 may miss 2026-10-14. We are moving it to Carrier B. Next update by 12:00 on 2026-10-15.")
+    assert check_alert(ok, facts)["passed"]
+    # audit repro: an invented remedy used to pass; now it is named and blocked
+    invented = Alert(subject="Update on ORD-1", body="We have rerouted your order by drone, upgraded you to priority, via Carrier E.")
+    c = check_alert(invented, facts)
+    assert not c["passed"] and {"rerouted", "drone", "priority", "upgraded"} <= set(c["actions_not_in_facts"])
+    assert c["names_not_in_facts"] == ["Carrier E"]
 
 
 def test_api_agents_end_to_end():
@@ -65,7 +73,9 @@ def test_api_agents_end_to_end():
     assert r["guardrails"]["decision"] in {"auto_accept", "request_info", "human_review"} and "truth" in r
     cand = client.get("/api/alerts/candidates?limit=1").json()[0]
     a = client.post("/api/alerts/draft", json={"delivery_id": cand["delivery_id"], "judge": True}).json()
-    assert a["checks"]["passed"] and a["judge"]["factual"] == 5
+    assert a["checks"]["passed"] and a["judge"]["factual"] == 5 and a["status"] == "ready_for_approval"
+    assert a["facts"]["new_estimate"] == "none" and "delivered_date" not in a["facts"]  # the outcome never reaches the model
+    assert "outcome" in a and cand["risk"] >= 0.5
     q = client.post("/api/ask", json={"question": "Which carrier is worst?"}).json()
     assert q["answer"]["answerable"] and q["grounding"]["grounded"]
     assert client.post("/api/ask", json={"question": "What was the weather in July?"}).json()["answer"]["answerable"] is False
@@ -148,3 +158,60 @@ def test_address_rejects_unknown_keys_so_a_misnamed_postcode_is_repaired_not_dro
     with pytest.raises(ValidationError):
         Address.model_validate({"line1": "1 Main St", "zip": "43214"})
     assert inline_schema(Extraction)["properties"]["delivery_address"]["additionalProperties"] is False
+
+
+def test_audit_repro_wrong_qty_unknown_service_no_evidence_and_suspicion_never_auto_accept():
+    email = "Please send SKU-12345 x 10 to 12 Maple Street, Columbus, OH 43001. Ref 4999."
+    base = dict(order_lines=[{"sku": "SKU-12345", "qty": 10}], commitment_type="standard", requested_date=None,
+                delivery_address={"line1": "12 Maple Street", "city": "Columbus", "state": "OH", "postcode": "43001"},
+                evidence={"order_lines": "SKU-12345 x 10", "commitment_type": "standard"}, confidence=0.97)
+    email_ok = email.replace("Ref 4999.", "Service: standard.")
+    assert intake.guardrails(email_ok, "", Extraction(**base), "2026-10-12T07:30")["decision"] == "auto_accept"
+    cases = {
+        "qty not next to its SKU": {"order_lines": [{"sku": "SKU-12345", "qty": 4999}]},
+        "unknown service": {"commitment_type": "unknown"},
+        "unsupported date": {"requested_date": "2026-11-30"},
+        "no evidence": {"evidence": {}},
+        "model suspicion": {"suspicious_instructions": True},
+    }
+    for name, change in cases.items():
+        g = intake.guardrails(email_ok.replace("Service", "Ref 4999. Service"), "", Extraction(**{**base, **change}), "2026-10-12T07:30")
+        assert g["decision"] == "human_review", (name, g)
+        assert len(g["flags"]) == 1, (name, g["flags"])  # each case is caught by its own check, not a side effect
+
+
+def test_true_quantities_in_every_layout_pass_the_pairing_check():
+    for e in load_emails():
+        for li in e["truth"]["order_lines"]:
+            assert intake.qty_written_next_to_sku(e["body"], li["sku"], li["qty"]), (e["email_id"], li)
+
+
+def test_audit_repro_grounding_needs_a_query_and_the_right_entity_row():
+    from app.agents.schemas import EvidenceAnswer
+    assert not evidence.grounding(EvidenceAnswer(answer="All deliveries were on time.", answerable=True), [])["grounded"]
+    trace = [{"output": {"rows": [["D", 0.395, 8928], ["A", 0.247, 9000]]}}]
+    g = evidence.grounding(EvidenceAnswer(answer="Carrier A was 39.5% late.", answerable=True), trace)
+    assert not g["grounded"] and g["wrong_entity_numbers"] == [39.5]
+    ok = EvidenceAnswer(answer="Carrier D has the worst late rate, 39.5% of 8,928 deliveries, well above the other carriers, "
+                               "which range from about 24.7%.", answerable=True,
+                        figures=[{"label": "Carrier D late rate", "value": "39.5%"}])
+    assert evidence.grounding(ok, trace)["grounded"]
+    bad_fig = EvidenceAnswer.model_validate({**ok.model_dump(), "figures": [{"label": "Carrier A late rate", "value": "39.5%"}]})
+    assert not evidence.grounding(bad_fig, trace)["grounded"]  # the figures shown in the UI are checked too
+
+
+def test_ungrounded_answer_gets_one_repair_round_and_is_marked_unverified(monkeypatch):
+    from app.agents.schemas import EvidenceAnswer
+    calls = []
+
+    class Fake:
+        name = "fake"
+
+        def tool_loop(self, prompt, user, tools, schema, context=None):
+            calls.append(user)
+            return EvidenceAnswer(answer="All deliveries were on time.", answerable=True), []
+
+    monkeypatch.setattr(evidence, "get_provider", lambda name=None: Fake())
+    r = evidence.ask("Were we on time?")
+    assert len(calls) == 2 and "without a successful query" in calls[1]
+    assert r["status"] == "unverified" and r["repaired"]

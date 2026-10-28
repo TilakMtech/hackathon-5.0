@@ -23,8 +23,27 @@ INJECTION_PATTERNS = re.compile(
     re.I)
 
 
+SKU_RE = re.compile(r"SKU-\d{5}", re.I)
+QTY_WINDOW = 20  # characters either side of a SKU, never past the neighbouring SKU
+
+
 def _norm(s: str) -> str:
     return re.sub(r"\s+", " ", s or "").strip().lower()
+
+
+def qty_written_next_to_sku(email_body: str, sku: str, qty: int) -> bool:
+    """The quantity must be written beside ITS SKU, not anywhere in the email (a 4,999 in a PO number is not a quantity)."""
+    ms = list(SKU_RE.finditer(email_body))
+    for i, m in enumerate(ms):
+        if m.group(0).upper() != sku.upper():
+            continue
+        line_lo = email_body.rfind("\n", 0, m.start()) + 1  # same line only: the next line's quantity is not this SKU's
+        line_hi = email_body.find("\n", m.end()) % (len(email_body) + 1)
+        lo = max(ms[i - 1].end() if i else 0, m.start() - QTY_WINDOW, line_lo)
+        hi = min(ms[i + 1].start() if i + 1 < len(ms) else len(email_body), m.end() + QTY_WINDOW, line_hi)
+        if re.search(rf"(?<![\d.]){qty}(?!\d)(?!\.\d)", email_body[lo:m.start()] + " " + email_body[m.end():hi]):
+            return True
+    return False
 
 
 def guardrails(email_body: str, default_address: str, x: Extraction, received_at: str) -> dict:
@@ -55,19 +74,39 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
         if m:
             flags.append(f"postcode {m.group(1)} appears after {st} in the email but was not extracted")
 
-    # 4. quantities and SKUs must be plausible and present in the email
+    # 4. quantities and SKUs must be plausible, present, and paired the way the email pairs them
     for line in x.order_lines:
         if line.qty > 5000:
             flags.append(f"quantity {line.qty} for {line.sku} is implausible")
         if _norm(line.sku) not in body:
             flags.append(f"{line.sku} not found in email")
+        elif not qty_written_next_to_sku(email_body, line.sku, line.qty):
+            flags.append(f"quantity {line.qty} is not written next to {line.sku} in the email")
     if not x.order_lines:
         flags.append("no order lines found")
+
+    # 4b. every consequential field needs its quote (checked verbatim in 1); without one, a person decides
+    need = ["order_lines"] + (["commitment_type"] if x.commitment_type != "unknown" else []) \
+        + (["requested_date"] if x.requested_date else [])
+    no_quote = [k for k in need if not (x.evidence.get(k) or "").strip()]
+    if no_quote:
+        flags.append(f"no evidence quote for: {', '.join(no_quote)}")
+
+    # 4c. an order we cannot schedule is not auto-accepted
+    if x.commitment_type == "unknown":
+        flags.append("service level not stated")
+    if x.requested_date:
+        try:
+            datetime.strptime(x.requested_date, "%Y-%m-%d")
+        except ValueError:
+            flags.append(f"requested date {x.requested_date!r} is not a valid date")
 
     # 5. prompt-injection text present (independent of whether the model noticed)
     injection = bool(INJECTION_PATTERNS.search(email_body))
     if injection and not x.suspicious_instructions:
         flags.append("email contains instructions aimed at the AI; model did not flag them")
+    if x.suspicious_instructions:  # either detector is enough to stop auto-accept
+        flags.append("model flagged suspicious instructions in the email")
 
     # 6. operational risk from the root-cause analysis
     received = datetime.fromisoformat(received_at)
@@ -77,7 +116,7 @@ def guardrails(email_body: str, default_address: str, x: Extraction, received_at
     if x.commitment_type == "same_day" and received.hour >= 8:
         risks.append("Same-day order after the 8am pick list: 61% arrive late unless a second wave picks it")
 
-    if flags or injection:
+    if flags or injection or x.suspicious_instructions:
         decision = "human_review"
     elif missing:
         decision = "request_info"
